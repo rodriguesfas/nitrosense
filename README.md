@@ -40,7 +40,7 @@ GUI dependencies: `python3-gi`, `gir1.2-gtk-4.0`, `gir1.2-adw-1`.
 | NitroSense / Resources | Here |
 |---|---|
 | CPU / GPU temps and load | HOME rings |
-| Per-core CPU | RESOURCES |
+| Per-core CPU | RESOURCES — sparkline cards per CPU, logical/physical toggle |
 | RAM used / total | HOME footer + MONITORING |
 | SWAP used / total | HOME footer + MONITORING |
 | Default-route NIC (↓/↑ Mb/s, IPv4) | HOME footer + RESOURCES |
@@ -49,13 +49,13 @@ GUI dependencies: `python3-gi`, `gir1.2-gtk-4.0`, `gir1.2-adw-1`.
 | Battery %, power, AC | header chip + RESOURCES + SETTINGS |
 | Fan RPM | HOME, after the driver |
 | Quiet / Default / Performance | ACPI profiles. Turbo **does not exist** on this chassis (firmware rejects it) |
-| Auto / Max / Custom fans | HOME — Custom writes `cpu%,gpu%` to Linuwu sysfs |
+| Auto / Max / Custom fans | HOME and SCENARIO — Custom writes `cpu%,gpu%` to Linuwu sysfs |
+| Scenario per-app profiles | SCENARIO — persist `~/.config/nitrosense/scenarios.json`; each rule binds Quiet/Default/Performance **and** Auto/Max/Custom fans |
 | 80% charge limit, calibration, USB charging | SETTINGS |
-| Backlight timeout | LIGHTING |
+| RTX TGP Default / Boost | SETTINGS — `nvidia-smi` (60 W vs 75 W on this RTX 4050). Needs pkexec once; resets at reboot |
+| Backlight timeout, display brightness, Night Light | LIGHTING |
 | 4-zone RGB | Only if `four_zoned_kb` appears in sysfs. ANV15-51 is a **single-color** backlight |
 | N key | `KEY_PROG1` (Acer WMI) → XF86Launch1 + grab-free listener |
-
-GPU TGP (60 W vs 75 W) is a different problem (nvidia-powerd / Dynamic Boost), not this app.
 
 NPU pages from Resources stay hidden unless the kernel exposes an NPU (this i5-13420H does not).
 

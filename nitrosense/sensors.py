@@ -23,12 +23,31 @@ _SKIP_PREFIX = ("br-", "veth", "virbr", "docker", "tun", "tap", "wg", "vnet")
 _SKIP_DISK = ("loop", "ram", "sr", "zram", "dm-", "md")
 
 
+_intel_rc6: tuple[int, float] | None = None
+_pci_pretty_cache: dict[str, str] = {}
+
+
 @dataclass
 class ProcInfo:
     pid: int
     name: str
     cpu_pct: float
     mem_mb: float
+
+
+@dataclass
+class GpuInfo:
+    key: str
+    vendor: str
+    name: str
+    temp: float | None = None
+    load: float | None = None
+    power_w: float | None = None
+    power_limit_w: float | None = None
+    power_default_w: float | None = None
+    power_min_w: float | None = None
+    power_max_w: float | None = None
+    freq_mhz: float | None = None
 
 
 @dataclass
@@ -49,18 +68,28 @@ class Sensors:
     cpu_name: str | None = None
     cpu_freq_ghz: float | None = None
     cpu_cores: list[float] = field(default_factory=list)
+    cpu_core_freq: list[float | None] = field(default_factory=list)
+    cpu_core_ids: list[int] = field(default_factory=list)
     gpu_temp: float | None = None
     gpu_load: float | None = None
     gpu_power_w: float | None = None
     gpu_power_limit_w: float | None = None
+    gpu_power_default_w: float | None = None
+    gpu_power_max_w: float | None = None
     gpu_name: str | None = None
+    gpus: list[GpuInfo] = field(default_factory=list)
     battery_pct: int | None = None
     battery_status: str | None = None
     battery_power_w: float | None = None
+    battery_cycles: int | None = None
+    battery_energy_wh: float | None = None
+    battery_full_wh: float | None = None
     on_ac: bool | None = None
     ram_total_gb: float | None = None
     ram_used_gb: float | None = None
     ram_pct: float | None = None
+    ram_available_gb: float | None = None
+    ram_cached_gb: float | None = None
     swap_total_gb: float | None = None
     swap_used_gb: float | None = None
     swap_pct: float | None = None
@@ -80,7 +109,7 @@ def read_sensors() -> Sensors:
     out.cpu_temp = _cpu_package_temp()
     out.cpu_name = _cpu_name()
     _cpu(out)
-    _nvidia(out)
+    _gpus(out)
     _battery(out)
     _ram(out)
     _swap(out)
@@ -131,67 +160,100 @@ def _cpu(out: Sensors) -> None:
         lines = Path("/proc/stat").read_text(encoding="utf-8").splitlines()
     except OSError:
         return
-    cores: list[float] = []
+    loads: dict[int, float] = {}
     next_cores: dict[int, tuple[int, int]] = {}
     for line in lines:
         parts = line.split()
         if not parts:
             continue
         key = parts[0]
-        if key == "cpu" or key.startswith("cpu"):
-            try:
-                nums = [int(x) for x in parts[1:]]
-            except ValueError:
-                continue
-            if len(nums) < 4:
-                continue
-            idle = nums[3] + (nums[4] if len(nums) > 4 else 0)
-            total = sum(nums)
-            if key == "cpu":
-                prev = _cpu_prev
-                _cpu_prev = (idle, total)
-                if prev is not None:
-                    dtotal = total - prev[1]
-                    if dtotal > 0:
-                        out.cpu_load = max(
-                            0.0, min(100.0, (1.0 - (idle - prev[0]) / dtotal) * 100.0)
-                        )
-                continue
-            try:
-                idx = int(key[3:])
-            except ValueError:
-                continue
-            next_cores[idx] = (idle, total)
-            prev = _core_prev.get(idx)
+        if key != "cpu" and not key.startswith("cpu"):
+            continue
+        try:
+            nums = [int(x) for x in parts[1:]]
+        except ValueError:
+            continue
+        if len(nums) < 4:
+            continue
+        idle = nums[3] + (nums[4] if len(nums) > 4 else 0)
+        total = sum(nums)
+        if key == "cpu":
+            prev = _cpu_prev
+            _cpu_prev = (idle, total)
             if prev is not None:
                 dtotal = total - prev[1]
                 if dtotal > 0:
-                    cores.append(
-                        max(0.0, min(100.0, (1.0 - (idle - prev[0]) / dtotal) * 100.0))
+                    out.cpu_load = max(
+                        0.0, min(100.0, (1.0 - (idle - prev[0]) / dtotal) * 100.0)
                     )
-                else:
-                    cores.append(0.0)
+            continue
+        try:
+            idx = int(key[3:])
+        except ValueError:
+            continue
+        next_cores[idx] = (idle, total)
+        prev = _core_prev.get(idx)
+        if prev is not None:
+            dtotal = total - prev[1]
+            if dtotal > 0:
+                loads[idx] = max(0.0, min(100.0, (1.0 - (idle - prev[0]) / dtotal) * 100.0))
             else:
-                cores.append(0.0)
+                loads[idx] = 0.0
+        else:
+            loads[idx] = 0.0
     _core_prev = next_cores
-    out.cpu_cores = cores
-    freqs: list[float] = []
+    n = (max(next_cores) + 1) if next_cores else 0
+    out.cpu_cores = [loads.get(i, 0.0) for i in range(n)]
+    freqs: list[float | None] = []
+    ids: list[int] = []
+    live: list[float] = []
     base = Path("/sys/devices/system/cpu")
-    if base.is_dir():
-        for path in sorted(base.glob("cpu[0-9]*/cpufreq/scaling_cur_freq")):
-            raw = _read(path)
-            if raw and raw.isdigit():
-                freqs.append(int(raw) / 1_000_000.0)
-    if freqs:
-        out.cpu_freq_ghz = sum(freqs) / len(freqs)
+    for i in range(n):
+        raw = _read(base / f"cpu{i}" / "cpufreq" / "scaling_cur_freq")
+        if raw and raw.isdigit():
+            ghz = int(raw) / 1_000_000.0
+            freqs.append(ghz)
+            live.append(ghz)
+        else:
+            freqs.append(None)
+        cid = _read(base / f"cpu{i}" / "topology" / "core_id")
+        ids.append(int(cid) if cid and cid.lstrip("-").isdigit() else i)
+    out.cpu_core_freq = freqs
+    out.cpu_core_ids = ids
+    if live:
+        out.cpu_freq_ghz = sum(live) / len(live)
 
 
-def _nvidia(out: Sensors) -> None:
+def _gpus(out: Sensors) -> None:
+    found: list[GpuInfo] = []
+    found.extend(_nvidia_gpus())
+    intel = _intel_gpu()
+    if intel is not None:
+        found.append(intel)
+    found.sort(key=lambda g: (0 if g.vendor == "Intel" else 1, g.key))
+    out.gpus = found
+    primary = next((g for g in found if g.vendor == "NVIDIA"), None)
+    if primary is None and found:
+        primary = found[0]
+    if primary is None:
+        return
+    out.gpu_name = primary.name
+    out.gpu_temp = primary.temp
+    out.gpu_load = primary.load
+    out.gpu_power_w = primary.power_w
+    out.gpu_power_limit_w = primary.power_limit_w
+    out.gpu_power_default_w = primary.power_default_w
+    out.gpu_power_max_w = primary.power_max_w
+
+
+def _nvidia_gpus() -> list[GpuInfo]:
     try:
         result = subprocess.run(
             [
                 "nvidia-smi",
-                "--query-gpu=name,temperature.gpu,utilization.gpu,power.draw,power.limit",
+                "--query-gpu=index,name,temperature.gpu,utilization.gpu,power.draw,"
+                "enforced.power.limit,power.default_limit,power.min_limit,"
+                "power.max_limit,clocks.gr",
                 "--format=csv,noheader,nounits",
             ],
             check=False,
@@ -200,22 +262,107 @@ def _nvidia(out: Sensors) -> None:
             timeout=1.5,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired):
-        return
+        return []
     if result.returncode != 0 or not result.stdout.strip():
-        return
-    line = result.stdout.strip().splitlines()[0]
-    parts = [p.strip() for p in line.split(",")]
-    if not parts:
-        return
-    out.gpu_name = parts[0] or None
-    if len(parts) > 1:
-        out.gpu_temp = _f(parts[1])
-    if len(parts) > 2:
-        out.gpu_load = _f(parts[2])
-    if len(parts) > 3:
-        out.gpu_power_w = _f(parts[3])
-    if len(parts) > 4:
-        out.gpu_power_limit_w = _f(parts[4])
+        return []
+    gpus: list[GpuInfo] = []
+    for line in result.stdout.strip().splitlines():
+        parts = [p.strip() for p in line.split(",")]
+        if not parts:
+            continue
+        idx = parts[0] if parts[0].isdigit() else str(len(gpus))
+        name = parts[1] if len(parts) > 1 else "NVIDIA GPU"
+        gpus.append(
+            GpuInfo(
+                key=f"nvidia-{idx}",
+                vendor="NVIDIA",
+                name=name,
+                temp=_f(parts[2]) if len(parts) > 2 else None,
+                load=_f(parts[3]) if len(parts) > 3 else None,
+                power_w=_f(parts[4]) if len(parts) > 4 else None,
+                power_limit_w=_f(parts[5]) if len(parts) > 5 else None,
+                power_default_w=_f(parts[6]) if len(parts) > 6 else None,
+                power_min_w=_f(parts[7]) if len(parts) > 7 else None,
+                power_max_w=_f(parts[8]) if len(parts) > 8 else None,
+                freq_mhz=_f(parts[9]) if len(parts) > 9 else None,
+            )
+        )
+    return gpus
+
+
+def _intel_gpu() -> GpuInfo | None:
+    global _intel_rc6
+    card = _drm_card("0x8086")
+    if card is None:
+        return None
+    gt = card / "gt" / "gt0"
+    freq = _f(_read(gt / "rps_act_freq_mhz") or "") or _f(_read(gt / "rps_cur_freq_mhz") or "")
+    rc6_raw = _read(gt / "rc6_residency_ms")
+    load = None
+    now = time.monotonic()
+    if rc6_raw and rc6_raw.isdigit():
+        rc6 = int(rc6_raw)
+        prev = _intel_rc6
+        _intel_rc6 = (rc6, now)
+        if prev is not None:
+            dt_ms = (now - prev[1]) * 1000.0
+            if dt_ms > 0:
+                idle = max(0.0, min(1.0, (rc6 - prev[0]) / dt_ms))
+                load = max(0.0, min(100.0, (1.0 - idle) * 100.0))
+    return GpuInfo(
+        key="intel",
+        vendor="Intel",
+        name=_pci_pretty(card, "Intel UHD Graphics"),
+        load=load,
+        freq_mhz=freq,
+        temp=_cpu_package_temp(),
+    )
+
+
+def _drm_card(vendor: str) -> Path | None:
+    base = Path("/sys/class/drm")
+    if not base.is_dir():
+        return None
+    for card in sorted(base.glob("card[0-9]")):
+        if _read(card / "device" / "vendor") == vendor:
+            return card
+    return None
+
+
+def _pci_pretty(card: Path, fallback: str) -> str:
+    slot = None
+    try:
+        for line in (card / "device" / "uevent").read_text(encoding="utf-8").splitlines():
+            if line.startswith("PCI_SLOT_NAME="):
+                slot = line.split("=", 1)[1]
+                break
+    except OSError:
+        slot = None
+    if not slot:
+        return fallback
+    cached = _pci_pretty_cache.get(slot)
+    if cached:
+        return cached
+    try:
+        result = subprocess.run(
+            ["lspci", "-s", slot],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=0.4,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return fallback
+    text = (result.stdout or "").strip()
+    name = fallback
+    if "[" in text and "]" in text:
+        inside = text[text.rfind("[") + 1 : text.rfind("]")]
+        if inside and not inside.startswith("8086"):
+            name = inside if "Intel" in inside else f"Intel {inside}"
+    elif ":" in text:
+        name = text.split(":", 1)[1].strip()
+    _pci_pretty_cache[slot] = name
+    return name
 
 
 def _battery(out: Sensors) -> None:
@@ -236,6 +383,15 @@ def _battery(out: Sensors) -> None:
                 out.battery_power_w = abs(val) / 1_000_000.0
             elif voltage and voltage.lstrip("-").isdigit():
                 out.battery_power_w = abs(val) * int(voltage) / 1_000_000.0 / 1_000_000.0
+        cycles = _read(bat / "cycle_count")
+        if cycles and cycles.isdigit():
+            out.battery_cycles = int(cycles)
+        energy_now = _read(bat / "energy_now")
+        energy_full = _read(bat / "energy_full")
+        if energy_now and energy_now.lstrip("-").isdigit():
+            out.battery_energy_wh = abs(int(energy_now)) / 1_000_000.0
+        if energy_full and energy_full.lstrip("-").isdigit():
+            out.battery_full_wh = abs(int(energy_full)) / 1_000_000.0
     ac = Path("/sys/class/power_supply/ACAD")
     if not ac.is_dir():
         acs = [
@@ -270,6 +426,9 @@ def _ram(out: Sensors) -> None:
         used = max(0, total - available)
         out.ram_used_gb = used / (1024 * 1024)
         out.ram_pct = max(0.0, min(100.0, used * 100.0 / total))
+        out.ram_available_gb = available / (1024 * 1024)
+    cached = (info.get("Cached") or 0) + (info.get("Buffers") or 0)
+    out.ram_cached_gb = cached / (1024 * 1024)
 
 
 def _swap(out: Sensors) -> None:
@@ -574,6 +733,9 @@ def _read(path: Path) -> str | None:
 
 
 def _f(raw: str) -> float | None:
+    raw = (raw or "").strip().replace("[N/A]", "").replace("W", "").replace("%", "")
+    if not raw or "deprecated" in raw.lower():
+        return None
     try:
         return float(raw)
     except ValueError:

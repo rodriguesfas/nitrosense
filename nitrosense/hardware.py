@@ -75,7 +75,7 @@ def _find_acer_hwmon() -> Path | None:
     return None
 
 
-def _helper_path() -> Path | None:
+def helper_path() -> Path | None:
     for path in HELPER_CANDIDATES:
         if path.is_file() and os.access(path, os.X_OK):
             return path
@@ -264,7 +264,7 @@ class Hardware:
         except OSError as exc:
             if getattr(exc, "errno", None) != 13:
                 raise
-        helper = _helper_path()
+        helper = helper_path()
         pkexec = shutil.which("pkexec")
         if helper is None or pkexec is None:
             raise PermissionError(
