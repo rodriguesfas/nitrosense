@@ -5,11 +5,22 @@
 <policyconfig>
   <action id="org.alfred.nitrosense.write">
     <description>NitroSense Linux: write laptop controls</description>
-    <message>NitroSense Linux needs to change laptop controls (fans, profile, battery, GPU TGP).</message>
+    <message>NitroSense Linux needs to change Acer firmware (fans, profile, battery).</message>
     <defaults>
       <allow_any>no</allow_any>
       <allow_inactive>no</allow_inactive>
       <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">@HELPER@</annotate>
+    <annotate key="org.freedesktop.policykit.exec.allow_gui">true</annotate>
+  </action>
+  <action id="org.alfred.nitrosense.tgp">
+    <description>NitroSense Linux: set NVIDIA GPU power limit</description>
+    <message>NitroSense Linux needs to set the NVIDIA TGP.</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>yes</allow_active>
     </defaults>
     <annotate key="org.freedesktop.policykit.exec.path">@HELPER@</annotate>
     <annotate key="org.freedesktop.policykit.exec.allow_gui">true</annotate>

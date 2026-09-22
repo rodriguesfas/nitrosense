@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=NitroSense TGP
+Comment=Restore last NVIDIA TGP at login
+Exec=@EXEC@
+Terminal=false
+NoDisplay=true
+X-GNOME-Autostart-enabled=true
+X-GNOME-Autostart-Phase=Application

@@ -29,14 +29,18 @@ if [[ ! -d /lib/modules/$(uname -r)/build ]]; then
 fi
 
 echo "==> GUI (user desktop entry)"
-mkdir -p "$(dirname "$APP_DESKTOP")" "$APP_ICON_DIR"
+mkdir -p "$(dirname "$APP_DESKTOP")" "$APP_ICON_DIR" "$HOME/.config/autostart"
 install -m 0755 "$ROOT/bin/nitrosense" "$ROOT/bin/nitrosense"
 install -m 0755 "$ROOT/bin/nitrosense-helper" "$ROOT/bin/nitrosense-helper"
 install -m 0755 "$ROOT/bin/nitrosense-fixperms" "$ROOT/bin/nitrosense-fixperms"
+install -m 0755 "$ROOT/bin/nitrosense-tgp-restore" "$ROOT/bin/nitrosense-tgp-restore"
 cp "$ROOT/data/icon.svg" "$APP_ICON_DIR/nitrosense-linux.svg"
 sed -e "s|@EXEC@|$ROOT/bin/nitrosense|g" -e "s|@ICON@|nitrosense-linux|g" \
   "$ROOT/data/nitrosense.desktop.in" > "$APP_DESKTOP"
 chmod 0644 "$APP_DESKTOP"
+sed -e "s|@EXEC@|$ROOT/bin/nitrosense-tgp-restore|g" \
+  "$ROOT/data/nitrosense-tgp.desktop.in" > "$HOME/.config/autostart/nitrosense-tgp.desktop"
+chmod 0644 "$HOME/.config/autostart/nitrosense-tgp.desktop"
 update-desktop-database "$HOME/.local/share/applications" 2>/dev/null || true
 
 echo

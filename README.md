@@ -9,6 +9,16 @@ System monitoring matches the GNOME **Resources** app you already run
 (`net.nokyan.Resources`): CPU cores, memory, swap, GPU, default-route NIC, disks,
 battery, and a process list with End.
 
+## Look
+
+HOME, SCENARIO and SETTINGS on this ANV15-51 (English UI):
+
+![HOME](docs/screenshots/home.png)
+
+![SCENARIO](docs/screenshots/scenario.png)
+
+![SETTINGS](docs/screenshots/settings.png)
+
 ## Install (.deb)
 
 Each merge into `main` publishes a [Release](https://github.com/rodriguesfas/nitrosense/releases)
@@ -52,7 +62,7 @@ GUI dependencies: `python3-gi`, `gir1.2-gtk-4.0`, `gir1.2-adw-1`.
 | Auto / Max / Custom fans | HOME and SCENARIO — Custom writes `cpu%,gpu%` to Linuwu sysfs |
 | Scenario per-app profiles | SCENARIO — persist `~/.config/nitrosense/scenarios.json`; each rule binds Quiet/Default/Performance **and** Auto/Max/Custom fans |
 | 80% charge limit, calibration, USB charging | SETTINGS |
-| RTX TGP Default / Boost | SETTINGS — `nvidia-smi` (60 W vs 75 W on this RTX 4050). Needs pkexec once; resets at reboot |
+| RTX TGP Default / Boost | SETTINGS — `nvidia-smi` (60 W vs 75 W on this RTX 4050). Last choice is restored at login (no password prompt) |
 | Backlight timeout, display brightness, Night Light | LIGHTING |
 | 4-zone RGB | Only if `four_zoned_kb` appears in sysfs. ANV15-51 is a **single-color** backlight |
 | N key | `KEY_PROG1` (Acer WMI) → XF86Launch1 + grab-free listener |
@@ -72,7 +82,8 @@ Bump `VERSION` before merging `dev` → `main`. The workflow refuses to reuse an
 
 ```
 nitrosense/     GUI + hardware + sensors
-bin/            launcher, hotkey, pkexec helper, fixperms
+bin/            launcher, hotkey, pkexec helper, TGP restore, fixperms
+docs/           README screenshots
 packaging/      build-deb.sh
 .github/        .deb release on main
 setup.sh        Linuwu driver

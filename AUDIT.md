@@ -25,7 +25,7 @@ Reference: Nitro V 15 manual (Home, Scenario, Fan Auto/Max/Custom, Monitoring 30
 | 30 min monitoring | 1800-point sparklines | **yes (no 3D)** |
 | Acer 3D avatar | cairo silhouette | **approximation** |
 | Scenario profiles bound to apps | `~/.config/nitrosense/scenarios.json` (mode + fans) | **yes** |
-| RTX TGP Default / Boost | `nvidia-smi -pl` via pkexec helper | **SETTINGS** |
+| RTX TGP Default / Boost | `nvidia-smi -pl` via pkexec; last watts restored at login | **SETTINGS + autostart** |
 | App Center / Planet9 | — | **no** |
 | CoolBoost / Optimus toggle | — | **no (not every Nitro V has them)** |
 | NPU | — | **hidden unless the kernel exposes one** |
