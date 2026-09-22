@@ -80,11 +80,11 @@ GUI dependencies: `python3-gi`, `gir1.2-gtk-4.0`, `gir1.2-adw-1`.
 | Auto / Max / Custom fans | HOME and SCENARIO — Custom writes `cpu%,gpu%` to Linuwu sysfs |
 | Scenario per-app profiles | SCENARIO — persist `~/.config/nitrosense/scenarios.json`; each rule binds Quiet/Default/Performance **and** Auto/Max/Custom fans |
 | 80% charge limit, calibration, USB charging | SETTINGS |
-| RTX TGP Default / Boost | SETTINGS — `nvidia-smi` (60 W vs 75 W on this RTX 4050). Last choice is restored at login (no password prompt) |
+| RTX TGP Default / Boost | SETTINGS — 60 W vs 75 W. On this RTX 4050 + open driver, `nvidia-smi -pl` is unsupported; Boost starts `nvidia-powerd` (Dynamic Boost). Last choice restored at login |
 | Backlight timeout, display brightness, Night Light | LIGHTING |
 | 4-zone RGB | Only if `four_zoned_kb` appears in sysfs. ANV15-51 is a **single-color** backlight |
 | N key | `KEY_PROG1` (Acer WMI) → XF86Launch1 + grab-free listener |
-| Top-bar icon | Ubuntu AppIndicators while the app is running. Close hides to the tray; click the N to reopen |
+| Top-bar icon | Ubuntu AppIndicators while the app is running. Close hides to the tray; click the N to reopen. Right-click Quiet / Default / Performance — the active profile is marked |
 
 NPU pages from Resources stay hidden unless the kernel exposes an NPU (this i5-13420H does not).
 

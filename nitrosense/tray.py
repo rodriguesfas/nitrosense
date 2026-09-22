@@ -149,12 +149,16 @@ class TrayIcon:
         on_show: Callable[[], None],
         on_quit: Callable[[], None],
         on_mode: Callable[[str], None] | None = None,
+        on_gpu_unlock: Callable[[bool], None] | None = None,
         labels: dict[str, str] | None = None,
     ) -> None:
         self._on_show = on_show
         self._on_quit = on_quit
         self._on_mode = on_mode
+        self._on_gpu_unlock = on_gpu_unlock
         self._labels = labels or {}
+        self._mode: str | None = None
+        self._gpu_unlocked = False
         self._revision = 1
         self._pixmap = _icon_pixmap(32)
         self._sni_id = 0
@@ -171,6 +175,18 @@ class TrayIcon:
 
     def _L(self, key: str, fallback: str) -> str:
         return self._labels.get(key) or fallback
+
+    def set_mode(self, key: str | None) -> None:
+        if key == self._mode:
+            return
+        self._mode = key
+        self._emit_mode_props()
+
+    def set_gpu_unlocked(self, unlocked: bool) -> None:
+        if unlocked == self._gpu_unlocked:
+            return
+        self._gpu_unlocked = unlocked
+        self._emit_mode_props()
 
     def _on_bus(self, conn: Gio.DBusConnection, _name: str) -> None:
         self._conn = conn
@@ -241,7 +257,9 @@ class TrayIcon:
         return values.get(name)
 
     def _sni_method(self, _conn, _sender, _path, _iface, method, params, invocation):
-        if method in {"Activate", "SecondaryActivate", "ContextMenu"}:
+        # Right-click is ContextMenu: the shell already opens dbusmenu.
+        # Presenting the window here steals focus and eats the menu click.
+        if method in {"Activate", "SecondaryActivate"}:
             GLib.idle_add(self._on_show)
         invocation.return_value(None)
 
@@ -250,51 +268,132 @@ class TrayIcon:
             return GLib.Variant("u", 3)
         if name == "Status":
             return GLib.Variant("s", "normal")
+        if name == "TextDirection":
+            return GLib.Variant("s", "ltr")
         return None
 
-    def _menu_tree(self):
-        def node(ident: int, props: dict, children: list | None = None):
-            packed = {}
-            for key, val in props.items():
-                packed[key] = val if isinstance(val, GLib.Variant) else GLib.Variant("s", str(val))
-            return (ident, packed, children or [])
+    @staticmethod
+    def _pack(props: dict) -> dict[str, GLib.Variant]:
+        packed: dict[str, GLib.Variant] = {}
+        for key, val in props.items():
+            if isinstance(val, GLib.Variant):
+                packed[key] = val
+            elif isinstance(val, bool):
+                packed[key] = GLib.Variant("b", val)
+            elif isinstance(val, int):
+                packed[key] = GLib.Variant("i", val)
+            else:
+                packed[key] = GLib.Variant("s", str(val))
+        return packed
 
+    def _check(self, ident: int, label: str, on: bool) -> tuple:
+        return (
+            ident,
+            self._pack(
+                {
+                    "label": label,
+                    "enabled": True,
+                    "visible": True,
+                    "toggle-type": "checkmark",
+                    "toggle-state": 1 if on else 0,
+                }
+            ),
+            [],
+        )
+
+    def _radio(self, ident: int, label: str, key: str) -> tuple:
+        return (
+            ident,
+            self._pack(
+                {
+                    "label": label,
+                    "enabled": True,
+                    "visible": True,
+                    "toggle-type": "radio",
+                    "toggle-state": 1 if self._mode == key else 0,
+                }
+            ),
+            [],
+        )
+
+    def _item(self, ident: int, **props) -> tuple:
+        return (ident, self._pack(props), [])
+
+    def _props_for(self, ident: int) -> dict[str, GLib.Variant] | None:
+        tree = {node[0]: node[1] for node in self._flat_items()}
+        return tree.get(ident)
+
+    def _flat_items(self) -> list[tuple[int, dict[str, GLib.Variant]]]:
+        root, kids = self._menu_tree()
+        out = [(root[0], root[1])]
+        out.extend((ident, props) for ident, props, _ch in kids)
+        return out
+
+    def _menu_tree(self):
         kids = [
-            node(1, {"label": self._L("tray.show", "Show window")}),
-            node(2, {"type": GLib.Variant("s", "separator")}),
-            node(10, {"label": self._L("mode.quiet", "Quiet")}),
-            node(11, {"label": self._L("mode.default", "Default")}),
-            node(12, {"label": self._L("mode.performance", "Performance")}),
-            node(13, {"type": GLib.Variant("s", "separator")}),
-            node(30, {"label": self._L("tray.quit", "Quit")}),
+            self._item(1, label=self._L("tray.show", "Show window"), enabled=True, visible=True),
+            self._item(2, type="separator", visible=True),
+            self._radio(10, self._L("mode.quiet", "Quiet"), "quiet"),
+            self._radio(11, self._L("mode.default", "Default"), "balanced"),
+            self._radio(12, self._L("mode.performance", "Performance"), "performance"),
+            self._item(13, type="separator", visible=True),
+            self._check(20, self._L("tray.gpu_unlock", "Unlock GPU"), self._gpu_unlocked),
+            self._item(21, type="separator", visible=True),
+            self._item(30, label=self._L("tray.quit", "Quit"), enabled=True, visible=True),
         ]
-        return (0, {"children-display": GLib.Variant("s", "submenu")}, kids)
+        root = (0, self._pack({"children-display": "submenu"}), kids)
+        return root, kids
 
     def _to_variant_layout(self, node) -> GLib.Variant:
         ident, props, children = node
         child_vars = [self._to_variant_layout(ch) for ch in children]
         return GLib.Variant("(ia{sv}av)", (ident, props, child_vars))
 
+    def _filter_props(
+        self, props: dict[str, GLib.Variant], names: list[str]
+    ) -> dict[str, GLib.Variant]:
+        if not names:
+            return props
+        return {key: val for key, val in props.items() if key in names}
+
     def _menu_method(self, _conn, _sender, _path, _iface, method, params, invocation):
         if method == "GetLayout":
-            layout = self._to_variant_layout(self._menu_tree())
-            invocation.return_value(GLib.Variant.new_tuple(GLib.Variant("u", self._revision), layout))
+            # Always return full properties. Ubuntu AppIndicators asks only for
+            # type/children-display here and then GetGroupProperties for new
+            # items; existing items never refetch, so toggle-state must ride
+            # along on GetLayout or the radio mark never appears.
+            root, _kids = self._menu_tree()
+            layout = self._to_variant_layout(root)
+            invocation.return_value(
+                GLib.Variant.new_tuple(GLib.Variant("u", self._revision), layout)
+            )
             return
         if method == "GetGroupProperties":
-            invocation.return_value(GLib.Variant("(a(ia{sv}))", ([],)))
+            ids, names = params.unpack()
+            names = list(names or [])
+            rows = []
+            for ident in ids:
+                props = self._props_for(int(ident))
+                if props is None:
+                    continue
+                rows.append((int(ident), self._filter_props(props, names)))
+            invocation.return_value(GLib.Variant("(a(ia{sv}))", (rows,)))
             return
         if method == "GetProperty":
-            invocation.return_value(GLib.Variant("(v)", (GLib.Variant("s", ""),)))
+            ident, name = params.unpack()
+            props = self._props_for(int(ident)) or {}
+            value = props.get(str(name), GLib.Variant("s", ""))
+            invocation.return_value(GLib.Variant.new_tuple(GLib.Variant("v", value)))
             return
         if method == "Event":
-            ident = int(params[0])
-            event = str(params[1])
-            if event == "clicked":
-                GLib.idle_add(self._menu_click, ident)
+            ident, event, _data, _ts = params.unpack()
+            if str(event) == "clicked":
+                GLib.idle_add(self._menu_click, int(ident))
             invocation.return_value(None)
             return
         if method == "AboutToShow":
-            invocation.return_value(GLib.Variant("(b)", (False,)))
+            # Shell refetches layout so radio ornaments match the live profile.
+            invocation.return_value(GLib.Variant("(b)", (True,)))
             return
         invocation.return_error_literal(
             Gio.dbus_error_quark(),
@@ -302,15 +401,52 @@ class TrayIcon:
             method,
         )
 
+    def _emit_layout(self) -> None:
+        if self._conn is None:
+            return
+        self._revision += 1
+        self._conn.emit_signal(
+            None,
+            _MENU_PATH,
+            "com.canonical.dbusmenu",
+            "LayoutUpdated",
+            GLib.Variant("(ui)", (self._revision, 0)),
+        )
+
+    def _emit_mode_props(self) -> None:
+        if self._conn is None:
+            return
+        updated = []
+        for ident in (10, 11, 12, 20):
+            props = self._props_for(ident)
+            if props is None:
+                continue
+            updated.append((ident, props))
+        self._conn.emit_signal(
+            None,
+            _MENU_PATH,
+            "com.canonical.dbusmenu",
+            "ItemsPropertiesUpdated",
+            GLib.Variant("(a(ia{sv})a(ias))", (updated, [])),
+        )
+        self._emit_layout()
+
     def _menu_click(self, ident: int) -> bool:
         if ident == 1:
             self._on_show()
         elif ident == 10 and self._on_mode:
+            self.set_mode("quiet")
             self._on_mode("quiet")
         elif ident == 11 and self._on_mode:
+            self.set_mode("balanced")
             self._on_mode("balanced")
         elif ident == 12 and self._on_mode:
+            self.set_mode("performance")
             self._on_mode("performance")
+        elif ident == 20 and self._on_gpu_unlock:
+            nxt = not self._gpu_unlocked
+            self.set_gpu_unlocked(nxt)
+            self._on_gpu_unlock(nxt)
         elif ident == 30:
             self._on_quit()
         return False

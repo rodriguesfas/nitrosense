@@ -82,6 +82,17 @@ def helper_path() -> Path | None:
     return None
 
 
+def pkexec_helper() -> Path | None:
+    """Helper path that matches the installed polkit exec.path annotation."""
+    for path in (
+        Path("/usr/libexec/nitrosense-helper"),
+        Path("/usr/local/libexec/nitrosense-helper"),
+    ):
+        if path.is_file() and os.access(path, os.X_OK):
+            return path
+    return helper_path()
+
+
 @dataclass
 class Capabilities:
     driver: str = "none"
@@ -264,7 +275,7 @@ class Hardware:
         except OSError as exc:
             if getattr(exc, "errno", None) != 13:
                 raise
-        helper = helper_path()
+        helper = pkexec_helper()
         pkexec = shutil.which("pkexec")
         if helper is None or pkexec is None:
             raise PermissionError(

@@ -7,7 +7,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 
-from nitrosense.hardware import helper_path
+from nitrosense.hardware import pkexec_helper
 from nitrosense.i18n import load_ui, save_ui
 
 
@@ -41,6 +41,20 @@ def saved_tgp() -> int | None:
 
 def save_tgp_choice(watts: int) -> None:
     save_ui(tgp_watts=int(watts))
+
+
+def powerd_active() -> bool:
+    try:
+        return (
+            subprocess.run(
+                ["systemctl", "is-active", "--quiet", "nvidia-powerd"],
+                check=False,
+                timeout=1,
+            ).returncode
+            == 0
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
 
 
 def read_tgp() -> TgpInfo | None:
@@ -95,20 +109,17 @@ def set_tgp(watts: int, *, persist: bool = True) -> None:
         )
     except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
         raise RuntimeError("nvidia-smi is not available") from exc
-    if result.returncode != 0:
-        helper = helper_path()
+    smi_out = ((result.stdout or "") + (result.stderr or "")).lower()
+    pl_ok = result.returncode == 0 and "not supported" not in smi_out
+    if not pl_ok:
+        helper = pkexec_helper()
         pkexec = shutil.which("pkexec")
         if helper is None or pkexec is None:
             raise PermissionError("TGP needs pkexec / nitrosense-helper")
+        # pkexec 124 has no --action-id; polkit picks org.alfred.nitrosense.tgp
+        # via exec.path + argv1=tgp (allow_active=yes, no password).
         privileged = subprocess.run(
-            [
-                pkexec,
-                "--action-id",
-                "org.alfred.nitrosense.tgp",
-                str(helper),
-                "tgp",
-                str(watts),
-            ],
+            [pkexec, str(helper), "tgp", str(watts)],
             check=False,
             capture_output=True,
             text=True,
@@ -129,6 +140,9 @@ def restore_saved_tgp() -> bool:
     if info is None:
         return False
     if info.current_w is not None and int(info.current_w) == int(want):
+        return False
+    hi = info.max_w if info.max_w is not None else 75
+    if want >= hi - 1 and powerd_active():
         return False
     set_tgp(want, persist=False)
     return True

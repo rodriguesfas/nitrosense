@@ -64,6 +64,9 @@ sed 's|@HOTKEY@|/usr/libexec/nitrosense-hotkey|g' \
 sed 's|@EXEC@|nitrosense-tgp-restore|g' \
   "$ROOT/data/nitrosense-tgp.desktop.in" \
   > "$STAGE/etc/xdg/autostart/nitrosense-tgp.desktop"
+install -d "$STAGE/usr/lib/systemd/system" "$STAGE/etc/dbus-1/system.d"
+install -m 0644 "$ROOT/data/nvidia-powerd.service" "$STAGE/usr/lib/systemd/system/nvidia-powerd.service"
+install -m 0644 "$ROOT/data/nvidia-powerd-dbus.conf" "$STAGE/etc/dbus-1/system.d/nvidia-powerd.conf"
 
 SIZE="$(du -sk "$STAGE" | awk '{print $1}')"
 
@@ -93,6 +96,9 @@ if command -v update-desktop-database >/dev/null 2>&1; then
 fi
 if command -v gtk-update-icon-cache >/dev/null 2>&1; then
   gtk-update-icon-cache -q /usr/share/icons/hicolor || true
+fi
+if command -v systemctl >/dev/null 2>&1; then
+  systemctl daemon-reload || true
 fi
 exit 0
 EOF

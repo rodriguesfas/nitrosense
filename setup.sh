@@ -97,9 +97,20 @@ sudo systemd-tmpfiles --create "$TMPCONF" || true
 sudo "$ROOT/bin/nitrosense-fixperms" || true
 
 POLICY_DST=/usr/share/polkit-1/actions/org.alfred.nitrosense.policy
-if [[ ! -x /usr/libexec/nitrosense-helper ]]; then
-  sed "s|@HELPER@|$ROOT/bin/nitrosense-helper|g" \
-    "$ROOT/data/org.alfred.nitrosense.policy.in" | sudo tee "$POLICY_DST" >/dev/null
+if [[ -x /usr/libexec/nitrosense-helper ]]; then
+  HELPER_FOR_POLICY=/usr/libexec/nitrosense-helper
+else
+  HELPER_FOR_POLICY="$ROOT/bin/nitrosense-helper"
+fi
+sed "s|@HELPER@|$HELPER_FOR_POLICY|g" \
+  "$ROOT/data/org.alfred.nitrosense.policy.in" | sudo tee "$POLICY_DST" >/dev/null
+
+if [[ -x /usr/bin/nvidia-powerd ]]; then
+  sudo install -m 0644 "$ROOT/data/nvidia-powerd.service" /etc/systemd/system/nvidia-powerd.service
+  sudo install -m 0644 "$ROOT/data/nvidia-powerd-dbus.conf" /etc/dbus-1/system.d/nvidia-powerd.conf
+  sudo mkdir -p /var/log/nvtopps
+  sudo systemctl reload dbus.service 2>/dev/null || true
+  sudo systemctl daemon-reload || true
 fi
 
 echo
