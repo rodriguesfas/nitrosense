@@ -33,6 +33,123 @@ ALLOWED_NAMES = {
 MAX_VALUE = 256
 TGP_MIN = 1
 TGP_MAX = 999
+POWERD_UNIT = Path("/etc/systemd/system/nvidia-powerd.service")
+POWERD_DBUS = Path("/etc/dbus-1/system.d/nvidia-powerd.conf")
+POWERD_LOG = Path("/var/log/nvtopps")
+
+
+def _data_candidates(name: str) -> list[Path]:
+    here = Path(__file__).resolve()
+    roots = [
+        here.parents[1] / "data",
+        Path("/usr/share/nitrosense/data"),
+        Path("/usr/share/nitrosense"),
+    ]
+    out = [root / name for root in roots]
+    if name == "nvidia-powerd.service":
+        out.extend(sorted(Path("/usr/share/doc").glob("nvidia-kernel-common-*/nvidia-powerd.service")))
+    return out
+
+
+def _copy_first(dest: Path, *names: str) -> bool:
+    if dest.is_file():
+        return True
+    for name in names:
+        for src in _data_candidates(name):
+            if src.is_file():
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                dest.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
+                dest.chmod(0o644)
+                return True
+    return dest.is_file()
+
+
+def _powerd_active() -> bool:
+    return subprocess.run(
+        ["systemctl", "is-active", "--quiet", "nvidia-powerd"],
+        check=False,
+    ).returncode == 0
+
+
+def _set_powerd(enable: bool) -> bool:
+    if not Path("/usr/bin/nvidia-powerd").is_file():
+        print("nvidia-powerd is not installed", file=sys.stderr)
+        return False
+    _copy_first(POWERD_UNIT, "nvidia-powerd.service")
+    dbus_new = not POWERD_DBUS.is_file()
+    _copy_first(POWERD_DBUS, "nvidia-powerd-dbus.conf")
+    POWERD_LOG.mkdir(parents=True, exist_ok=True)
+    if dbus_new:
+        subprocess.run(["systemctl", "reload", "dbus.service"], check=False)
+    subprocess.run(["systemctl", "daemon-reload"], check=False)
+    if enable:
+        subprocess.run(["systemctl", "enable", "--now", "nvidia-powerd.service"], check=False)
+    else:
+        subprocess.run(["systemctl", "disable", "--now", "nvidia-powerd.service"], check=False)
+    return _powerd_active() == enable
+
+
+def _smi_limits() -> tuple[int | None, int | None, int | None]:
+    result = subprocess.run(
+        [
+            "nvidia-smi",
+            "--query-gpu=enforced.power.limit,power.default_limit,power.max_limit",
+            "--format=csv,noheader,nounits",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0 or not result.stdout.strip():
+        return None, None, None
+
+    def _n(raw: str) -> int | None:
+        raw = raw.strip().replace("[N/A]", "")
+        try:
+            return int(round(float(raw)))
+        except ValueError:
+            return None
+
+    parts = [p.strip() for p in result.stdout.strip().splitlines()[0].split(",")]
+    cur = _n(parts[0]) if parts else None
+    default = _n(parts[1]) if len(parts) > 1 else None
+    maximum = _n(parts[2]) if len(parts) > 2 else None
+    return cur, default, maximum
+
+
+def _tgp(raw: str) -> int:
+    try:
+        watts = int(raw)
+    except ValueError:
+        print("TGP must be an integer wattage", file=sys.stderr)
+        return 2
+    if watts < TGP_MIN or watts > TGP_MAX:
+        print("TGP out of range", file=sys.stderr)
+        return 2
+    result = subprocess.run(
+        ["nvidia-smi", "-pl", str(watts)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    out = ((result.stdout or "") + (result.stderr or "")).strip()
+    pl_ok = result.returncode == 0 and "not supported" not in out.lower()
+    _cur, default, maximum = _smi_limits()
+    want_boost = maximum is not None and watts >= maximum - 1
+    if default is not None and maximum is None:
+        want_boost = watts > default
+    if not _set_powerd(want_boost):
+        if want_boost:
+            print(out or "could not enable NVIDIA Dynamic Boost (nvidia-powerd)", file=sys.stderr)
+            return 1
+        # Turning boost off: still OK if -pl worked or powerd is simply absent.
+        if Path("/usr/bin/nvidia-powerd").is_file():
+            print("could not stop nvidia-powerd", file=sys.stderr)
+            return 1
+    if pl_ok or _powerd_active() is want_boost:
+        return 0
+    print(out or "could not set GPU power limit", file=sys.stderr)
+    return 1
 
 
 def _allowed(path: Path) -> bool:
@@ -65,27 +182,6 @@ def _write(path: Path, value: str) -> int:
         path.write_text(value + "\n", encoding="utf-8")
     except OSError as exc:
         print(str(exc), file=sys.stderr)
-        return 1
-    return 0
-
-
-def _tgp(raw: str) -> int:
-    try:
-        watts = int(raw)
-    except ValueError:
-        print("TGP must be an integer wattage", file=sys.stderr)
-        return 2
-    if watts < TGP_MIN or watts > TGP_MAX:
-        print("TGP out of range", file=sys.stderr)
-        return 2
-    result = subprocess.run(
-        ["nvidia-smi", "-pl", str(watts)],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        print((result.stderr or result.stdout or "nvidia-smi -pl failed").strip(), file=sys.stderr)
         return 1
     return 0
 

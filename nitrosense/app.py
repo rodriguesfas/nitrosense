@@ -19,7 +19,7 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Adw, Gdk, GLib, Gtk, Pango
 
-from nitrosense.gpu import restore_saved_tgp, set_tgp
+from nitrosense.gpu import powerd_active, restore_saved_tgp, set_tgp
 from nitrosense.hardware import NITRO_MODES, Hardware
 from nitrosense.i18n import LANG_LABELS, LANGS, lang as ui_lang, save_lang, set_lang, t
 from nitrosense.tray import TrayIcon
@@ -258,6 +258,10 @@ class NitroWindow(Adw.ApplicationWindow):
         self._scen_active_match: str | None = None
         self._scen_app_names: list[str] = []
         self.tgp_buttons: dict[str, Gtk.Button] = {}
+        self.gpu_unlock_switch = Gtk.Switch()
+        self.gpu_cap_btn: Gtk.Button | None = None
+        self._gpu_cap_lab: Gtk.Label | None = None
+        self._gpu_cap_status: Gtk.Label | None = None
         self._tgp_default_w: int | None = None
         self._tgp_max_w: int | None = None
         self._tgp_restore_tried = False
@@ -393,6 +397,21 @@ class NitroWindow(Adw.ApplicationWindow):
         controls.set_margin_bottom(4)
         controls.append(modes)
         controls.append(fans)
+        cap = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4, halign=Gtk.Align.CENTER)
+        self.gpu_cap_btn = Gtk.Button()
+        self.gpu_cap_btn.add_css_class("mode-tile")
+        cap_inner = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, halign=Gtk.Align.CENTER)
+        cap_inner.append(ModeIcon("performance", size=46))
+        self._gpu_cap_lab = Gtk.Label()
+        self._gpu_cap_lab.add_css_class("ns-tile-label")
+        cap_inner.append(self._gpu_cap_lab)
+        self.gpu_cap_btn.set_child(cap_inner)
+        self.gpu_cap_btn.connect("clicked", self._on_gpu_cap_clicked)
+        cap.append(self.gpu_cap_btn)
+        self._gpu_cap_status = Gtk.Label(wrap=True)
+        self._gpu_cap_status.add_css_class("muted")
+        cap.append(self._gpu_cap_status)
+        controls.append(cap)
         controls.append(self.custom_reveal)
 
         page.append(overlay)
@@ -1056,25 +1075,8 @@ class NitroWindow(Adw.ApplicationWindow):
         self._tgp_now = Gtk.Label(xalign=0)
         self._tgp_now.add_css_class("muted")
         tgp.append(self._tgp_now)
-        tgp_hint = Gtk.Label(wrap=True, xalign=0)
-        tgp_hint.add_css_class("muted")
-        self._i18n_bind(tgp_hint, "set.tgp_hint")
-        tgp.append(tgp_hint)
-        tgp_row = Gtk.Box(spacing=12, homogeneous=True)
-        for key, icon in (("default", "balanced"), ("boost", "performance")):
-            btn = Gtk.Button()
-            btn.add_css_class("mode-tile")
-            box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, halign=Gtk.Align.CENTER)
-            box.append(ModeIcon(icon, size=46))
-            lab = Gtk.Label()
-            lab.add_css_class("ns-tile-label")
-            box.append(lab)
-            btn.set_child(box)
-            btn.connect("clicked", self._on_tgp, key)
-            btn._ns_lab = lab  # type: ignore[attr-defined]
-            self.tgp_buttons[key] = btn
-            tgp_row.append(btn)
-        tgp.append(tgp_row)
+        self.gpu_unlock_switch.connect("state-set", self._on_gpu_unlock_switch)
+        tgp.append(self._option_row("gpu.cap_switch", self.gpu_unlock_switch, "gpu.cap_hint"))
         self._tgp_missing = Gtk.Label(wrap=True, xalign=0)
         self._tgp_missing.add_css_class("muted")
         self._i18n_bind(self._tgp_missing, "set.tgp_missing")
@@ -1174,6 +1176,7 @@ class NitroWindow(Adw.ApplicationWindow):
                 break
         self._set_active_map(self.mode_buttons, current_mode)
         self._set_active_map(self.scen_mode_buttons, current_mode)
+        self._sync_tray_mode(current_mode)
         if current_mode:
             self.hero.set_mode(current_mode)
 
@@ -1253,31 +1256,34 @@ class NitroWindow(Adw.ApplicationWindow):
     def _refresh_tgp_labels(self) -> None:
         default = self._tgp_default_w or 60
         boost = self._tgp_max_w or 75
-        mapping = (("default", "set.tgp_default", default), ("boost", "set.tgp_boost", boost))
-        for key, i18n, watts in mapping:
-            btn = self.tgp_buttons.get(key)
-            if btn is None:
-                continue
-            lab = getattr(btn, "_ns_lab", None)
-            if lab is not None:
-                lab.set_text(t(i18n, watts=watts))
+        unlocked = powerd_active()
+        if self._gpu_cap_lab is not None:
+            if unlocked:
+                self._gpu_cap_lab.set_text(t("gpu.cap_lock", watts=default))
+            else:
+                self._gpu_cap_lab.set_text(t("gpu.cap_unlock", watts=boost))
+
+    def _gpu_unlocked(self, current: int | None, boost: int) -> bool:
+        if current is not None and current >= boost - 1:
+            return True
+        return powerd_active()
 
     def _sync_tgp(self, sensors: Sensors) -> None:
-        if not self.tgp_buttons:
-            return
         gpu = self._nvidia_gpu(sensors)
         has = gpu is not None and (
             gpu.power_default_w is not None or gpu.power_max_w is not None
         )
         if hasattr(self, "_tgp_missing"):
             self._tgp_missing.set_visible(not has)
-        for btn in self.tgp_buttons.values():
-            btn.set_sensitive(has)
-            btn.set_visible(has)
+        if self.gpu_cap_btn is not None:
+            self.gpu_cap_btn.set_sensitive(has)
+            self.gpu_cap_btn.set_visible(has)
+        if self._gpu_cap_status is not None:
+            self._gpu_cap_status.set_visible(has)
+        self.gpu_unlock_switch.set_sensitive(has)
         if not has:
             if hasattr(self, "_tgp_now"):
                 self._tgp_now.set_text(t("set.tgp_now", watts="—"))
-            self._set_active_map(self.tgp_buttons, None)
             return
         default = int(round(gpu.power_default_w or 60))
         boost = int(round(gpu.power_max_w or 75))
@@ -1286,16 +1292,47 @@ class NitroWindow(Adw.ApplicationWindow):
         )
         self._tgp_default_w = default
         self._tgp_max_w = boost
+        unlocked = self._gpu_unlocked(current, boost)
         self._refresh_tgp_labels()
-        self._tgp_now.set_text(t("set.tgp_now", watts=current))
-        active = "boost" if current >= boost - 1 else "default"
-        self._set_active_map(self.tgp_buttons, active)
+        if unlocked:
+            status = t("gpu.cap_on", boost=boost, watts=current)
+            if self.gpu_cap_btn is not None:
+                self.gpu_cap_btn.add_css_class("active")
+        else:
+            status = t("gpu.cap_off", watts=current)
+            if self.gpu_cap_btn is not None:
+                self.gpu_cap_btn.remove_css_class("active")
+        self._tgp_now.set_text(status)
+        if self._gpu_cap_status is not None:
+            self._gpu_cap_status.set_text(status)
+        was_busy = self._busy
+        self._busy = True
+        self._set_switch(self.gpu_unlock_switch, has, unlocked)
+        self._busy = was_busy
+        app = self.get_application()
+        tray = getattr(app, "_tray", None) if app is not None else None
+        if tray is not None and hasattr(tray, "set_gpu_unlocked"):
+            tray.set_gpu_unlocked(unlocked)
+
+    def _apply_gpu_unlock(self, unlock: bool) -> None:
+        watts = self._tgp_max_w if unlock else self._tgp_default_w
+        if watts is None:
+            watts = 75 if unlock else 60
+        self._run(set_tgp, int(watts))
+
+    def _on_gpu_cap_clicked(self, _btn) -> None:
+        boost = self._tgp_max_w or 75
+        current = None
+        self._apply_gpu_unlock(not self._gpu_unlocked(current, boost))
+
+    def _on_gpu_unlock_switch(self, _switch: Gtk.Switch, state: bool) -> bool:
+        if self._busy:
+            return False
+        self._apply_gpu_unlock(bool(state))
+        return False
 
     def _on_tgp(self, _btn, key: str) -> None:
-        watts = self._tgp_max_w if key == "boost" else self._tgp_default_w
-        if watts is None:
-            return
-        self._run(set_tgp, int(watts))
+        self._apply_gpu_unlock(key == "boost")
 
     def _restore_saved_tgp(self) -> bool:
         try:
@@ -1542,7 +1579,14 @@ class NitroWindow(Adw.ApplicationWindow):
         self.hero.set_mode(key)
         self._set_active_map(self.mode_buttons, key)
         self._set_active_map(self.scen_mode_buttons, key)
+        self._sync_tray_mode(key)
         self._run(self.hw.set_profile, fw)
+
+    def _sync_tray_mode(self, key: str | None) -> None:
+        app = self.get_application()
+        tray = getattr(app, "_tray", None) if app is not None else None
+        if tray is not None:
+            tray.set_mode(key)
 
     def _set_fan_scales(self, cpu: int, gpu: int) -> None:
         self._busy = True
@@ -2171,6 +2215,7 @@ class NitroSenseApplication(Adw.Application):
             on_show=self._show_from_tray,
             on_quit=self._quit_from_tray,
             on_mode=self._mode_from_tray,
+            on_gpu_unlock=self._gpu_unlock_from_tray,
             labels={
                 "tray.show": t("tray.show"),
                 "tray.quit": t("tray.quit"),
@@ -2178,6 +2223,7 @@ class NitroSenseApplication(Adw.Application):
                 "mode.quiet": t("mode.quiet"),
                 "mode.default": t("mode.default"),
                 "mode.performance": t("mode.performance"),
+                "tray.gpu_unlock": t("tray.gpu_unlock"),
             },
         )
 
@@ -2213,6 +2259,11 @@ class NitroSenseApplication(Adw.Application):
         self._ensure_window()
         assert self.window is not None
         self.window._on_mode(None, key)
+
+    def _gpu_unlock_from_tray(self, unlock: bool) -> None:
+        self._ensure_window()
+        assert self.window is not None
+        self.window._apply_gpu_unlock(unlock)
 
 
 def main(argv: list[str] | None = None) -> int:
