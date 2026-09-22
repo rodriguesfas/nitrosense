@@ -11,11 +11,29 @@ battery, and a process list with End.
 
 ## Look
 
-HOME, SCENARIO and SETTINGS on this ANV15-51 (English UI):
+HUD on this ANV15-51:
 
 ![HOME](docs/screenshots/home.png)
 
 ![SCENARIO](docs/screenshots/scenario.png)
+
+![MONITORING](docs/screenshots/monitoring.png)
+
+![RESOURCES — CPU](docs/screenshots/resources-cpu.png)
+
+![RESOURCES — memory](docs/screenshots/resources-memory.png)
+
+![RESOURCES — graphics](docs/screenshots/resources-graphics.png)
+
+![RESOURCES — network](docs/screenshots/resources-network.png)
+
+![RESOURCES — storage](docs/screenshots/resources-storage.png)
+
+![RESOURCES — battery](docs/screenshots/resources-battery.png)
+
+![RESOURCES — processes](docs/screenshots/resources-processes.png)
+
+![LIGHTING](docs/screenshots/lighting.png)
 
 ![SETTINGS](docs/screenshots/settings.png)
 
