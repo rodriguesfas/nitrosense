@@ -1,0 +1,141 @@
+window.nitrosense {
+  background-color: #050505;
+  color: #f2f2f2;
+  font-family: Inter, Cantarell, sans-serif;
+}
+
+window.nitrosense headerbar,
+.ns-top {
+  background: #050505;
+  box-shadow: none;
+  border: none;
+}
+
+.ns-brand-nitro {
+  font-family: "Inter Display", Inter, sans-serif;
+  font-weight: 800;
+  font-size: 20px;
+  letter-spacing: 6px;
+  color: #ffffff;
+}
+
+.ns-brand-sense {
+  font-family: "Inter Display", Inter, sans-serif;
+  font-weight: 800;
+  font-size: 20px;
+  letter-spacing: 6px;
+  color: #ff6a00;
+}
+
+.ns-chip {
+  background: #141414;
+  color: #cfcfcf;
+  padding: 4px 10px;
+  border-radius: 2px;
+  font-size: 11px;
+  letter-spacing: 1px;
+}
+
+.ns-nav {
+  background: transparent;
+  padding: 4px 0 0 0;
+}
+
+.ns-nav button {
+  background: transparent;
+  color: #8a8a8a;
+  font-weight: 700;
+  letter-spacing: 1.6px;
+  font-size: 12px;
+  padding: 10px 18px;
+  border: none;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  box-shadow: none;
+  min-height: 36px;
+}
+
+.ns-nav button:hover {
+  background: transparent;
+  color: #ff6a00;
+}
+
+.ns-nav button:checked {
+  background: transparent;
+  color: #ff6a00;
+  border-bottom: 2px solid #ff6a00;
+  box-shadow: none;
+}
+
+.mode-tile {
+  background: #0e0e0e;
+  color: #f0f0f0;
+  border: 1px solid #2a2a2a;
+  border-radius: 4px;
+  min-width: 128px;
+  min-height: 92px;
+  padding: 8px 12px;
+}
+
+.mode-tile:hover {
+  border-color: #ff6a00;
+}
+
+.mode-tile.active {
+  background: #160c04;
+  border-color: #ff6a00;
+  box-shadow: 0 0 22px rgba(255, 106, 0, 0.28);
+  color: #ff6a00;
+}
+
+.fan-pill {
+  min-width: 96px;
+  min-height: 40px;
+  background: #101010;
+  color: #ddd;
+  border: 1px solid #2a2a2a;
+  border-radius: 2px;
+  font-weight: 700;
+  letter-spacing: 1px;
+}
+
+.fan-pill.active {
+  background: #ff6a00;
+  color: #111;
+  border-color: #ff6a00;
+}
+
+.warn-banner {
+  background: #1a1008;
+  color: #ffb070;
+  border: 1px solid #5a3414;
+  border-radius: 2px;
+  padding: 8px 12px;
+  font-size: 12px;
+}
+
+.muted {
+  color: #8a8a8a;
+}
+
+.panel {
+  background: #0c0c0c;
+  border: 1px solid #222;
+  border-radius: 6px;
+  padding: 18px;
+}
+
+scale highlight {
+  background: #ff6a00;
+}
+
+scale trough {
+  background: #2a2a2a;
+  min-height: 6px;
+}
+
+.ns-status {
+  color: #6e6e6e;
+  font-size: 11px;
+  letter-spacing: 0.6px;
+}

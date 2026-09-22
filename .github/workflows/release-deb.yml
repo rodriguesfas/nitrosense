@@ -1,0 +1,53 @@
+name: Release .deb
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install packager
+        run: sudo apt-get update && sudo apt-get install -y dpkg-dev
+
+      - name: Build .deb
+        run: chmod +x packaging/build-deb.sh && ./packaging/build-deb.sh
+
+      - name: Tag and publish GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          VERSION="$(tr -d '[:space:]' < VERSION)"
+          TAG="v${VERSION}"
+          DEB="$(ls dist/nitrosense_${VERSION}_all.deb)"
+          DEB_BASE="$(basename "$DEB")"
+          if git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null 2>&1; then
+            echo "A tag ${TAG} já existe. Sobe VERSION em dev antes de voltar a mergear em main."
+            exit 1
+          fi
+          cat > /tmp/release-notes.md <<END
+          Pacote Debian \`${DEB_BASE}\` gerado a partir de \`main\`.
+
+          Instalar:
+
+          \`\`\`bash
+          sudo apt install ./${DEB_BASE}
+          nitrosense-setup
+          nitrosense
+          \`\`\`
+
+          O .deb traz a GUI. O módulo de kernel Linuwu continua a instalar-se à parte.
+          END
+          sed -i 's/^[[:space:]]*//' /tmp/release-notes.md
+          gh release create "$TAG" "$DEB" \
+            --target "$GITHUB_SHA" \
+            --title "NitroSense Linux ${TAG}" \
+            --notes-file /tmp/release-notes.md

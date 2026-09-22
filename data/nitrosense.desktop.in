@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=NitroSense
+Comment=Acer Nitro Sense (unofficial Linux)
+Exec=@EXEC@
+Icon=@ICON@
+Terminal=false
+Categories=System;Settings;HardwareSettings;
+StartupWMClass=NitroSense
+Keywords=Acer;Nitro;Fan;Predator;

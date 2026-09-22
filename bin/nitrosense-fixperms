@@ -1,0 +1,68 @@
+#!/usr/bin/env python3
+"""Ajusta permissões do sysfs NitroSense para o grupo do operador."""
+
+from __future__ import annotations
+
+import grp
+import os
+import pwd
+import sys
+from pathlib import Path
+
+TARGETS = [
+    Path("/sys/firmware/acpi/platform_profile"),
+    Path("/sys/module/linuwu_sense/drivers/platform:acer-wmi/acer-wmi/nitro_sense"),
+    Path("/sys/module/linuwu_sense/drivers/platform:acer-wmi/acer-wmi/predator_sense"),
+    Path("/sys/module/linuwu_sense/drivers/platform:acer-wmi/acer-wmi/four_zoned_kb"),
+    Path("/sys/devices/platform/acer-wmi/nitro_sense"),
+    Path("/sys/devices/platform/acer-wmi/predator_sense"),
+]
+
+
+def _chown_tree(path: Path, uid: int, gid: int) -> None:
+    if path.is_file():
+        os.chown(path, uid, gid)
+        os.chmod(path, 0o664)
+        return
+    if not path.is_dir():
+        return
+    for child in path.rglob("*"):
+        if child.is_file():
+            os.chown(child, uid, gid)
+            os.chmod(child, 0o664)
+
+
+def main() -> int:
+    user = os.environ.get("SUDO_USER")
+    if not user:
+        pkexec_uid = os.environ.get("PKEXEC_UID")
+        if pkexec_uid and pkexec_uid.isdigit():
+            user = pwd.getpwuid(int(pkexec_uid)).pw_name
+    user = user or os.environ.get("USER") or "fasr"
+    uid = pwd.getpwnam(user).pw_uid
+    try:
+        gid = grp.getgrnam(user).gr_gid
+    except KeyError:
+        gid = pwd.getpwnam(user).pw_gid
+    for target in TARGETS:
+        if target.exists():
+            _chown_tree(target, uid, gid)
+    hwmon = Path("/sys/class/hwmon")
+    if hwmon.is_dir():
+        for node in hwmon.glob("hwmon*"):
+            name_file = node / "name"
+            try:
+                name = name_file.read_text(encoding="utf-8").strip()
+            except OSError:
+                continue
+            if name in {"acer", "acer_wmi"}:
+                for fname in ("pwm1", "pwm2", "pwm1_enable", "pwm2_enable"):
+                    pwm = node / fname
+                    if pwm.is_file():
+                        os.chown(pwm, uid, gid)
+                        os.chmod(pwm, 0o664)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

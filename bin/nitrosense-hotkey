@@ -1,0 +1,101 @@
+#!/usr/bin/env python3
+"""Tecla NitroSense sem grab (não rouba WLAN / touchpad do Acer WMI)."""
+
+from __future__ import annotations
+
+import os
+import select
+import struct
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+_here = Path(__file__).resolve()
+if (_here.parents[1] / "nitrosense").is_dir():
+    ROOT = _here.parents[1]
+    APP = ROOT / "bin" / "nitrosense"
+else:
+    ROOT = Path("/usr/share/nitrosense")
+    APP = Path("/usr/bin/nitrosense")
+LOG = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp")) / "nitrosense-hotkey.log"
+CODES = {int(x) for x in os.environ.get("NITROSENSE_KEY_CODES", "148 425 149").split()}
+DEBOUNCE = float(os.environ.get("NITROSENSE_KEY_DEBOUNCE", "0.6"))
+EV_KEY = 1
+EVENT_FMT = "llHHi"
+EVENT_SIZE = struct.calcsize(EVENT_FMT)
+if EVENT_SIZE < 24:
+    EVENT_FMT = "qqHHi"
+    EVENT_SIZE = struct.calcsize(EVENT_FMT)
+
+NAMES = {"Acer WMI hotkeys", "AT Translated Set 2 keyboard"}
+
+
+def log(msg: str) -> None:
+    line = time.strftime("[%Y-%m-%d %H:%M:%S] ") + msg + "\n"
+    try:
+        with LOG.open("a", encoding="utf-8") as fh:
+            fh.write(line)
+    except OSError:
+        pass
+
+
+def find_devices() -> list[Path]:
+    found: list[Path] = []
+    for name_path in Path("/sys/class/input").glob("event*/device/name"):
+        try:
+            name = name_path.read_text(encoding="utf-8").strip()
+        except OSError:
+            continue
+        if name in NAMES:
+            found.append(Path("/dev/input") / name_path.parts[-3])
+    return [p for p in found if p.exists()]
+
+
+def launch() -> None:
+    log("tecla Nitro — abrir/focar NitroSense")
+    subprocess.Popen(
+        [str(APP)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+        env=os.environ.copy(),
+    )
+
+
+def main() -> int:
+    devices = find_devices()
+    if not devices:
+        log("nenhum dispositivo Acer WMI / AT keyboard")
+        return 1
+    fds: list[int] = []
+    for path in devices:
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+        fds.append(fd)
+    log(f"listening {devices} codes={sorted(CODES)} (no grab)")
+    last = 0.0
+    try:
+        while True:
+            ready, _, _ = select.select(fds, [], [], 1.0)
+            now = time.monotonic()
+            for fd in ready:
+                while True:
+                    try:
+                        raw = os.read(fd, EVENT_SIZE)
+                    except BlockingIOError:
+                        break
+                    if len(raw) < EVENT_SIZE:
+                        break
+                    _sec, _usec, etype, code, value = struct.unpack(EVENT_FMT, raw)
+                    if etype == EV_KEY and value == 1 and code in CODES:
+                        if now - last >= DEBOUNCE:
+                            last = now
+                            launch()
+    finally:
+        for fd in fds:
+            os.close(fd)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+set -euo pipefail
+HERE="$(cd "$(dirname "$0")" && pwd)"
+if [[ -d "$HERE/../nitrosense" ]]; then
+  ROOT="$(cd "$HERE/.." && pwd)"
+elif [[ -d /usr/share/nitrosense/nitrosense ]]; then
+  ROOT=/usr/share/nitrosense
+else
+  echo "nitrosense: ficheiros da app não encontrados" >&2
+  exit 1
+fi
+export PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}"
+exec python3 -m nitrosense.app "$@"

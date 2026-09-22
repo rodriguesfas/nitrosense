@@ -1,0 +1,14 @@
+vendor/
+dist/
+__pycache__/
+*.pyc
+*.pyo
+*.ko
+*.o
+*.mod.c
+*.mod
+Module.symvers
+modules.order
+.cache
+*.deb
+.DS_Store

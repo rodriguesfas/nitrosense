@@ -1,0 +1,76 @@
+#!/usr/bin/env python3
+"""Escreve sysfs permitido via pkexec. Não aceita caminhos fora da allowlist."""
+
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+ALLOWED_PREFIXES = (
+    Path("/sys/module/linuwu_sense"),
+    Path("/sys/devices/platform/acer-wmi"),
+    Path("/sys/firmware/acpi/platform_profile"),
+)
+
+ALLOWED_NAMES = {
+    "fan_speed",
+    "battery_limiter",
+    "battery_calibration",
+    "usb_charging",
+    "backlight_timeout",
+    "lcd_override",
+    "boot_animation_sound",
+    "four_zone_mode",
+    "per_zone_mode",
+    "platform_profile",
+    "pwm1",
+    "pwm2",
+    "pwm1_enable",
+    "pwm2_enable",
+}
+
+MAX_VALUE = 256
+
+
+def _allowed(path: Path) -> bool:
+    resolved = path.resolve()
+    if resolved.name not in ALLOWED_NAMES:
+        return False
+    for prefix in ALLOWED_PREFIXES:
+        try:
+            resolved.relative_to(prefix)
+            return True
+        except ValueError:
+            continue
+    # PWM do hwmon acer
+    if resolved.name in {"pwm1", "pwm2", "pwm1_enable", "pwm2_enable"}:
+        try:
+            name = (resolved.parent / "name").read_text(encoding="utf-8").strip()
+        except OSError:
+            return False
+        return name in {"acer", "acer_wmi"}
+    return False
+
+
+def main(argv: list[str]) -> int:
+    if len(argv) != 4 or argv[1] != "write":
+        print("uso: nitrosense-helper write <path> <valor>", file=sys.stderr)
+        return 2
+    path = Path(argv[2])
+    value = argv[3]
+    if "\n" in value or len(value) > MAX_VALUE:
+        print("valor inválido", file=sys.stderr)
+        return 2
+    if not _allowed(path):
+        print(f"caminho recusado: {path}", file=sys.stderr)
+        return 3
+    try:
+        path.write_text(value + "\n", encoding="utf-8")
+    except OSError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv))
