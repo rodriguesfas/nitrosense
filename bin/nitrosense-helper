@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Write allowed sysfs nodes via pkexec. Paths outside the allow-list are rejected."""
+"""Privileged writes: Linuwu sysfs and NVIDIA TGP. Paths outside the allow-list are rejected."""
 
 from __future__ import annotations
 
+import subprocess
 import sys
 from pathlib import Path
 
@@ -30,6 +31,8 @@ ALLOWED_NAMES = {
 }
 
 MAX_VALUE = 256
+TGP_MIN = 1
+TGP_MAX = 999
 
 
 def _allowed(path: Path) -> bool:
@@ -42,7 +45,6 @@ def _allowed(path: Path) -> bool:
             return True
         except ValueError:
             continue
-    # acer hwmon PWM
     if resolved.name in {"pwm1", "pwm2", "pwm1_enable", "pwm2_enable"}:
         try:
             name = (resolved.parent / "name").read_text(encoding="utf-8").strip()
@@ -52,12 +54,7 @@ def _allowed(path: Path) -> bool:
     return False
 
 
-def main(argv: list[str]) -> int:
-    if len(argv) != 4 or argv[1] != "write":
-        print("usage: nitrosense-helper write <path> <value>", file=sys.stderr)
-        return 2
-    path = Path(argv[2])
-    value = argv[3]
+def _write(path: Path, value: str) -> int:
     if "\n" in value or len(value) > MAX_VALUE:
         print("invalid value", file=sys.stderr)
         return 2
@@ -70,6 +67,36 @@ def main(argv: list[str]) -> int:
         print(str(exc), file=sys.stderr)
         return 1
     return 0
+
+
+def _tgp(raw: str) -> int:
+    try:
+        watts = int(raw)
+    except ValueError:
+        print("TGP must be an integer wattage", file=sys.stderr)
+        return 2
+    if watts < TGP_MIN or watts > TGP_MAX:
+        print("TGP out of range", file=sys.stderr)
+        return 2
+    result = subprocess.run(
+        ["nvidia-smi", "-pl", str(watts)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        print((result.stderr or result.stdout or "nvidia-smi -pl failed").strip(), file=sys.stderr)
+        return 1
+    return 0
+
+
+def main(argv: list[str]) -> int:
+    if len(argv) == 3 and argv[1] == "tgp":
+        return _tgp(argv[2])
+    if len(argv) == 4 and argv[1] == "write":
+        return _write(Path(argv[2]), argv[3])
+    print("usage: nitrosense-helper write <path> <value> | tgp <watts>", file=sys.stderr)
+    return 2
 
 
 if __name__ == "__main__":
