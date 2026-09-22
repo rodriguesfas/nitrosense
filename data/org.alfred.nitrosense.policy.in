@@ -12,6 +12,7 @@
       <allow_active>auth_admin_keep</allow_active>
     </defaults>
     <annotate key="org.freedesktop.policykit.exec.path">@HELPER@</annotate>
+    <annotate key="org.freedesktop.policykit.exec.argv1">write</annotate>
     <annotate key="org.freedesktop.policykit.exec.allow_gui">true</annotate>
   </action>
   <action id="org.alfred.nitrosense.tgp">
@@ -23,6 +24,7 @@
       <allow_active>yes</allow_active>
     </defaults>
     <annotate key="org.freedesktop.policykit.exec.path">@HELPER@</annotate>
+    <annotate key="org.freedesktop.policykit.exec.argv1">tgp</annotate>
     <annotate key="org.freedesktop.policykit.exec.allow_gui">true</annotate>
   </action>
 </policyconfig>
