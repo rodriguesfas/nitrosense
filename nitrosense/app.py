@@ -4,22 +4,41 @@ from __future__ import annotations
 
 import os
 import signal
+import subprocess
 import sys
+import time
 from pathlib import Path
+
+from nitrosense import __version__
 
 import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-from gi.repository import Adw, Gdk, GLib, Gtk
+from gi.repository import Adw, Gdk, GLib, Gtk, Pango
 
+from nitrosense.gpu import set_tgp
 from nitrosense.hardware import NITRO_MODES, Hardware
-from nitrosense.sensors import ProcInfo, Sensors, read_sensors
+from nitrosense.i18n import LANG_LABELS, LANGS, lang as ui_lang, save_lang, set_lang, t
+from nitrosense.lighting import (
+    NIGHT_TEMP_MAX,
+    NIGHT_TEMP_MIN,
+    lock_leds,
+    night_light,
+    screen_brightness,
+    set_night_light,
+    set_night_temp,
+    set_screen_brightness,
+    toggle_lock_led,
+)
+from nitrosense.scenarios import Rule, ScenarioConfig, load as load_scenarios, save as save_scenarios
+from nitrosense.sensors import GpuInfo, ProcInfo, Sensors, read_sensors
 from nitrosense.widgets import (
     DISK,
-    CoreStrip,
-    HudBar,
+    CoreTile,
+    KeyboardDeck,
     LaptopHero,
+    MetricTile,
     ModeIcon,
     NET,
     RingGauge,
@@ -30,25 +49,105 @@ from nitrosense.widgets import (
 ROOT = Path(__file__).resolve().parents[1]
 CSS_PATH = Path(__file__).with_name("style.css")
 SETUP = ROOT / "setup.sh"
+AUTOSTART_PATH = Path.home() / ".config/autostart/nitrosense.desktop"
+DESKTOP_SRC = Path.home() / ".local/share/applications/nitrosense-linux.desktop"
+HOTKEY_UNIT = "nitrosense-hotkey.service"
+GITHUB_URL = "https://github.com/rodriguesfas/nitrosense"
+_SKIP_SCENARIO_APPS = {
+    "bash",
+    "sh",
+    "zsh",
+    "systemd",
+    "dbus-daemon",
+    "dbus-broker",
+    "pipewire",
+    "pipewire-pulse",
+    "wireplumber",
+    "pulseaudio",
+    "Xorg",
+    "Xwayland",
+    "gnome-shell",
+    "gjs",
+    "python3",
+    "python",
+    "nitrosense",
+}
 
 
-def _tile(kind: str, title: str, css: str, callback, *cb_args) -> Gtk.Button:
+def _tile(kind: str, title_key: str, css: str, callback, *cb_args) -> Gtk.Button:
     btn = Gtk.Button()
     btn.add_css_class(css)
-    box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6, halign=Gtk.Align.CENTER)
-    box.append(ModeIcon(kind))
-    lab = Gtk.Label(label=title)
-    lab.add_css_class("muted")
+    box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, halign=Gtk.Align.CENTER)
+    size = 46 if css == "mode-tile" else 36
+    box.append(ModeIcon(kind, size=size))
+    lab = Gtk.Label(label=t(title_key))
+    lab.add_css_class("ns-tile-label")
     box.append(lab)
     btn.set_child(box)
     btn.connect("clicked", callback, *cb_args)
+    btn._ns_i18n = title_key  # type: ignore[attr-defined]
     return btn
+
+
+def _dmi(key: str) -> str:
+    try:
+        text = Path(f"/sys/class/dmi/id/{key}").read_text(encoding="utf-8").strip()
+    except OSError:
+        return "—"
+    return text or "—"
+
+
+def _autostart_on() -> bool:
+    return AUTOSTART_PATH.is_file()
+
+
+def _set_autostart(on: bool) -> None:
+    AUTOSTART_PATH.parent.mkdir(parents=True, exist_ok=True)
+    if not on:
+        AUTOSTART_PATH.unlink(missing_ok=True)
+        return
+    if DESKTOP_SRC.is_file():
+        text = DESKTOP_SRC.read_text(encoding="utf-8")
+    else:
+        exe = ROOT / "bin" / "nitrosense"
+        text = (
+            "[Desktop Entry]\n"
+            "Type=Application\n"
+            "Name=NitroSense\n"
+            f"Exec={exe}\n"
+            "Icon=nitrosense-linux\n"
+            "Terminal=false\n"
+            "Categories=System;Settings;HardwareSettings;\n"
+        )
+    if "X-GNOME-Autostart-enabled" not in text:
+        text = text.rstrip() + "\nX-GNOME-Autostart-enabled=true\n"
+    AUTOSTART_PATH.write_text(text, encoding="utf-8")
+
+
+def _systemctl_user(*args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["systemctl", "--user", *args],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def _hotkey_on() -> bool:
+    return _systemctl_user("is-active", "--quiet", HOTKEY_UNIT).returncode == 0
+
+
+def _set_hotkey(on: bool) -> None:
+    if on:
+        _systemctl_user("enable", "--now", HOTKEY_UNIT)
+    else:
+        _systemctl_user("disable", "--now", HOTKEY_UNIT)
 
 
 class NitroWindow(Adw.ApplicationWindow):
     def __init__(self, app: Adw.Application) -> None:
         super().__init__(application=app, title="NitroSense")
-        self.set_default_size(1280, 860)
+        self.set_default_size(1280, 920)
         self.add_css_class("nitrosense")
         self.hw = Hardware()
         self._busy = False
@@ -58,56 +157,106 @@ class NitroWindow(Adw.ApplicationWindow):
         self.hero = LaptopHero()
         self.mode_buttons: dict[str, Gtk.Button] = {}
         self.fan_buttons: dict[str, Gtk.Button] = {}
+        self.scen_mode_buttons: dict[str, Gtk.Button] = {}
+        self.scen_fan_buttons: dict[str, Gtk.Button] = {}
         self.cpu_scale = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 1, 100, 1)
         self.gpu_scale = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 1, 100, 1)
+        self.scen_cpu_scale = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 1, 100, 1)
+        self.scen_gpu_scale = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 1, 100, 1)
+        self._i18n_items: list[tuple[Gtk.Widget, str, str]] = []
+        self._light_hold = 0.0
         self.limit_switch = Gtk.Switch()
         self.timeout_switch = Gtk.Switch()
         self.lcd_switch = Gtk.Switch()
         self.boot_switch = Gtk.Switch()
+        self.autostart_switch = Gtk.Switch()
+        self.hotkey_switch = Gtk.Switch()
+        self.night_switch = Gtk.Switch()
+        self.brightness_scale = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0, 100, 1)
+        self.night_temp_scale = Gtk.Scale.new_with_range(
+            Gtk.Orientation.HORIZONTAL, NIGHT_TEMP_MIN, NIGHT_TEMP_MAX, 50
+        )
+        self._brightness_to = None
+        self._night_temp_to = None
+        self.kb_deck = KeyboardDeck()
         self.usb_values = (0, 10, 20, 30)
         self.usb_drop = Gtk.DropDown.new_from_strings(
-            ["Off", "Until 10%", "Until 20%", "Until 30%"]
+            [t("usb.off"), t("usb.until", pct=10), t("usb.until", pct=20), t("usb.until", pct=30)]
         )
-        self.calibrate_btn = Gtk.Button(label="Start battery calibration")
+        self.calibrate_btn = Gtk.Button(label=t("set.calibrate_btn"))
+        self.lang_drop = Gtk.DropDown.new_from_strings(list(LANG_LABELS))
         self._banner = Gtk.Label(wrap=True, xalign=0)
         self._banner.add_css_class("warn-banner")
         self._banner.set_visible(False)
         self._status = Gtk.Label(xalign=0)
         self._status.add_css_class("ns-status")
+        self._status.set_visible(False)
         self._chip = Gtk.Label(label="AC")
         self._chip.add_css_class("ns-chip")
-        self.chart_cpu_t = Sparkline("CPU temperature", "°C")
-        self.chart_gpu_t = Sparkline("GPU temperature", "°C", color=(0.3, 0.7, 1.0))
-        self.chart_cpu_l = Sparkline("CPU loading", "%")
-        self.chart_gpu_l = Sparkline("GPU loading", "%", color=(0.3, 0.7, 1.0))
-        self.chart_ram_p = Sparkline("RAM loading", "%", color=(0.2, 0.85, 0.55))
-        self.chart_ram_g = Sparkline("RAM used", "GB", color=(0.2, 0.85, 0.55))
-        self.chart_swap_p = Sparkline("SWAP loading", "%", color=SWAP)
-        self.chart_swap_g = Sparkline("SWAP used", "GB", color=SWAP)
-        self.chart_net_rx = Sparkline("Network down", "Mbps", color=NET)
-        self.chart_net_tx = Sparkline("Network up", "Mbps", color=NET)
-        self.chart_disk_r = Sparkline("Disk read", "MB/s", color=DISK)
-        self.chart_disk_w = Sparkline("Disk write", "MB/s", color=DISK)
-        self.ram_bar = HudBar("RAM", width=300)
-        self.swap_bar = HudBar("SWAP", accent=SWAP, width=300)
-        self.net_bar = HudBar("NET", accent=NET, width=300)
-        self.disk_bar = HudBar("DISK", accent=DISK, width=300)
-        self.core_strip = CoreStrip()
+        self.chart_cpu_t = Sparkline(t("chart.cpu_temp"), "°C")
+        self.chart_gpu_t = Sparkline(t("chart.gpu_temp"), "°C", color=(0.3, 0.7, 1.0))
+        self.chart_cpu_l = Sparkline(t("chart.cpu_load"), "%")
+        self.chart_gpu_l = Sparkline(t("chart.gpu_load"), "%", color=(0.3, 0.7, 1.0))
+        self.chart_ram_p = Sparkline(t("chart.ram_load"), "%", color=(0.2, 0.85, 0.55))
+        self.chart_ram_g = Sparkline(t("chart.ram_used"), "GB", color=(0.2, 0.85, 0.55))
+        self.chart_swap_p = Sparkline(t("chart.swap_load"), "%", color=SWAP)
+        self.chart_swap_g = Sparkline(t("chart.swap_used"), "GB", color=SWAP)
+        self.chart_net_rx = Sparkline(t("chart.net_down"), "Mbps", color=NET)
+        self.chart_net_tx = Sparkline(t("chart.net_up"), "Mbps", color=NET)
+        self.chart_disk_r = Sparkline(t("chart.disk_read"), "MB/s", color=DISK)
+        self.chart_disk_w = Sparkline(t("chart.disk_write"), "MB/s", color=DISK)
+        self.home_ram = MetricTile(t("tile.ram"), "%", height=56)
+        self.home_swap = MetricTile(t("tile.swap"), "%", color=SWAP, height=56)
+        self.home_net = MetricTile(t("tile.net"), "Mb/s", color=NET, ceiling=None, height=56)
+        self.home_disk = MetricTile(t("tile.disk"), "%", color=DISK, height=56)
+        self.res_cpu_spark = Sparkline(t("tile.total"), "%")
+        self.res_cpu_spark.set_content_height(88)
+        self.mem_used_tile = MetricTile(t("tile.memory"), "%")
+        self.mem_swap_tile = MetricTile(t("tile.swap"), "%", color=SWAP)
+        self.net_rx_tile = MetricTile(t("tile.download"), "Mb/s", color=NET, ceiling=None)
+        self.net_tx_tile = MetricTile(t("tile.upload"), "Mb/s", color=NET, ceiling=None)
+        self.bat_charge_tile = MetricTile(t("tile.charge"), "%")
+        self.bat_power_tile = MetricTile(t("tile.power"), "W", ceiling=None)
+        self._disk_host = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=16)
+        self._disk_widgets: dict[str, dict] = {}
+        self._gpu_host = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=18)
+        self._gpu_widgets: dict[str, dict] = {}
+        self._core_tiles: list[CoreTile] = []
+        self._core_host = Gtk.FlowBox()
+        self._core_host.set_selection_mode(Gtk.SelectionMode.NONE)
+        self._core_host.set_homogeneous(True)
+        self._core_host.set_min_children_per_line(2)
+        self._core_host.set_max_children_per_line(4)
+        self._core_host.set_row_spacing(10)
+        self._core_host.set_column_spacing(10)
+        self._core_host.set_hexpand(True)
+        self._core_host.set_valign(Gtk.Align.START)
+        self._core_host.add_css_class("ns-core-grid")
+        self._cpu_logical = Gtk.Switch()
+        self._cpu_logical.set_active(True)
+        self._cpu_logical.set_valign(Gtk.Align.CENTER)
+        self._cpu_logical.connect("notify::active", self._on_cpu_logical)
+        self._proc_widgets: dict[int, dict] = {}
         self._proc_search = Gtk.SearchEntry()
-        self._proc_search.set_placeholder_text("Filter processes")
+        self._proc_search.set_placeholder_text(t("proc.filter"))
         self._proc_search.connect("search-changed", self._on_proc_filter)
         self._proc_list = Gtk.ListBox()
         self._proc_list.add_css_class("boxed-list")
         self._proc_rows: list[ProcInfo] = []
-        self._ram_chip = Gtk.Label(label="RAM")
-        self._ram_chip.add_css_class("ns-chip")
-        self._swap_chip = Gtk.Label(label="SWAP")
-        self._swap_chip.add_css_class("ns-chip")
-        self._net_chip = Gtk.Label(label="NET")
-        self._net_chip.add_css_class("ns-chip")
         self._rpm_visual = 1800.0
+        self._rpm_cpu = 1800.0
+        self._rpm_gpu = 1800.0
         self._fan_scale_to = None
         self._fan_user = False
+        self._custom_cpu = 50
+        self._custom_gpu = 50
+        self._mode_manual_until = 0.0
+        self._scen_cfg: ScenarioConfig = load_scenarios()
+        self._scen_active_match: str | None = None
+        self._scen_app_names: list[str] = []
+        self.tgp_buttons: dict[str, Gtk.Button] = {}
+        self._tgp_default_w: int | None = None
+        self._tgp_max_w: int | None = None
         self._proc_tick = 0
         self._build()
         GLib.timeout_add(1000, self._tick)
@@ -127,19 +276,28 @@ class NitroWindow(Adw.ApplicationWindow):
         header.add_css_class("ns-top")
         header.set_title_widget(brand)
         header.pack_end(self._chip)
-        header.pack_end(self._net_chip)
-        header.pack_end(self._swap_chip)
-        header.pack_end(self._ram_chip)
 
         tabs = Gtk.Stack()
         tabs.set_transition_type(Gtk.StackTransitionType.CROSSFADE)
         tabs.set_vexpand(True)
-        tabs.add_titled(self._page_home(), "home", "HOME")
-        tabs.add_titled(self._page_scenario(), "scenario", "SCENARIO")
-        tabs.add_titled(self._page_monitoring(), "monitoring", "MONITORING")
-        tabs.add_titled(self._page_resources(), "resources", "RESOURCES")
-        tabs.add_titled(self._page_lighting(), "lighting", "LIGHTING")
-        tabs.add_titled(self._page_settings(), "settings", "SETTINGS")
+        tabs.add_titled(self._page_home(), "home", t("tab.home"))
+        tabs.add_titled(self._page_scenario(), "scenario", t("tab.scenario"))
+        tabs.add_titled(self._page_monitoring(), "monitoring", t("tab.monitoring"))
+        tabs.add_titled(self._page_resources(), "resources", t("tab.resources"))
+        tabs.add_titled(self._page_lighting(), "lighting", t("tab.lighting"))
+        tabs.add_titled(self._page_settings(), "settings", t("tab.settings"))
+        self._tabs = tabs
+        for name, key in (
+            ("home", "tab.home"),
+            ("scenario", "tab.scenario"),
+            ("monitoring", "tab.monitoring"),
+            ("resources", "tab.resources"),
+            ("lighting", "tab.lighting"),
+            ("settings", "tab.settings"),
+        ):
+            child = tabs.get_child_by_name(name)
+            if child is not None:
+                self._i18n_bind(child, key, "stack")
 
         switcher = Gtk.StackSwitcher(stack=tabs, hexpand=True)
         switcher.add_css_class("ns-nav")
@@ -149,76 +307,83 @@ class NitroWindow(Adw.ApplicationWindow):
         outer.append(switcher)
         outer.append(self._banner)
         outer.append(tabs)
-        foot = Gtk.Box(spacing=8, halign=Gtk.Align.CENTER)
-        foot.set_margin_top(4)
-        foot.set_margin_bottom(6)
-        foot.append(self.ram_bar)
-        foot.append(self.swap_bar)
-        foot.append(self.net_bar)
-        foot.append(self.disk_bar)
-        outer.append(foot)
+        start = os.environ.get("NITROSENSE_TAB")
+        if start and tabs.get_child_by_name(start):
+            tabs.set_visible_child_name(start)
         outer.append(self._status)
 
         toolbar = Adw.ToolbarView()
         toolbar.add_top_bar(header)
         toolbar.set_content(outer)
         self.set_content(toolbar)
+        self._i18n_bind(self.chart_cpu_t, "chart.cpu_temp", "spark")
+        self._i18n_bind(self.chart_gpu_t, "chart.gpu_temp", "spark")
+        self._i18n_bind(self.chart_cpu_l, "chart.cpu_load", "spark")
+        self._i18n_bind(self.chart_gpu_l, "chart.gpu_load", "spark")
+        self._i18n_bind(self.chart_ram_p, "chart.ram_load", "spark")
+        self._i18n_bind(self.chart_ram_g, "chart.ram_used", "spark")
+        self._i18n_bind(self.chart_swap_p, "chart.swap_load", "spark")
+        self._i18n_bind(self.chart_swap_g, "chart.swap_used", "spark")
+        self._i18n_bind(self.chart_net_rx, "chart.net_down", "spark")
+        self._i18n_bind(self.chart_net_tx, "chart.net_up", "spark")
+        self._i18n_bind(self.chart_disk_r, "chart.disk_read", "spark")
+        self._i18n_bind(self.chart_disk_w, "chart.disk_write", "spark")
+        self._i18n_bind(self.home_ram, "tile.ram", "metric")
+        self._i18n_bind(self.home_swap, "tile.swap", "metric")
+        self._i18n_bind(self.home_net, "tile.net", "metric")
+        self._i18n_bind(self.home_disk, "tile.disk", "metric")
+        self._i18n_bind(self.mem_used_tile, "tile.memory", "metric")
+        self._i18n_bind(self.mem_swap_tile, "tile.swap", "metric")
+        self._i18n_bind(self.net_rx_tile, "tile.download", "metric")
+        self._i18n_bind(self.net_tx_tile, "tile.upload", "metric")
+        self._i18n_bind(self.bat_charge_tile, "tile.charge", "metric")
+        self._i18n_bind(self.bat_power_tile, "tile.power", "metric")
+        self._i18n_bind(self.res_cpu_spark, "tile.total", "spark")
+        self._i18n_bind(self._proc_search, "proc.filter", "placeholder")
+        self._i18n_bind(self.calibrate_btn, "set.calibrate_btn")
+        self._bind_mode_tiles()
 
     def _page_home(self) -> Gtk.Widget:
         page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         overlay = Gtk.Overlay()
         overlay.set_child(self.hero)
         overlay.set_vexpand(True)
+        overlay.set_size_request(-1, 360)
 
-        left = Gtk.Box(halign=Gtk.Align.START, valign=Gtk.Align.START)
-        left.set_margin_start(36)
-        left.set_margin_top(48)
+        left = Gtk.Box(halign=Gtk.Align.START, valign=Gtk.Align.CENTER)
+        left.set_margin_start(28)
         left.append(self.cpu_gauge)
         overlay.add_overlay(left)
 
-        right = Gtk.Box(halign=Gtk.Align.END, valign=Gtk.Align.START)
-        right.set_margin_end(36)
-        right.set_margin_top(48)
+        right = Gtk.Box(halign=Gtk.Align.END, valign=Gtk.Align.CENTER)
+        right.set_margin_end(28)
         right.append(self.gpu_gauge)
         overlay.add_overlay(right)
 
         modes = Gtk.Box(spacing=12, homogeneous=True, halign=Gtk.Align.CENTER)
         mapping = (
-            ("quiet", "quiet", "Quiet"),
-            ("balanced", "balanced", "Default"),
-            ("performance", "performance", "Performance"),
+            ("quiet", "quiet", "mode.quiet"),
+            ("balanced", "balanced", "mode.default"),
+            ("performance", "performance", "mode.performance"),
         )
         for key, icon, title in mapping:
             btn = _tile(icon, title, "mode-tile", self._on_mode, key)
             self.mode_buttons[key] = btn
             modes.append(btn)
 
-        fans = Gtk.Box(spacing=8, halign=Gtk.Align.CENTER)
+        fans = Gtk.Box(spacing=12, homogeneous=True, halign=Gtk.Align.CENTER)
         for key, icon, title in (
-            ("auto", "auto", "Auto"),
-            ("max", "max", "Max"),
-            ("custom", "custom", "Custom"),
+            ("auto", "auto", "fan.auto"),
+            ("max", "max", "fan.max"),
+            ("custom", "custom", "fan.custom"),
         ):
             btn = _tile(icon, title, "fan-pill", self._on_fan_mode, key)
             self.fan_buttons[key] = btn
             fans.append(btn)
 
-        self.custom_box = Gtk.Box(spacing=16)
-        self.custom_box.set_halign(Gtk.Align.CENTER)
-        for scale, label in ((self.cpu_scale, "CPU fan"), (self.gpu_scale, "GPU fan")):
-            scale.set_hexpand(True)
-            scale.set_size_request(220, -1)
-            scale.set_draw_value(True)
-            scale.set_value(50)
-            scale.connect("value-changed", self._on_fan_scale)
-            col = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
-            lab = Gtk.Label(label=label, xalign=0)
-            lab.add_css_class("muted")
-            col.append(lab)
-            col.append(scale)
-            self.custom_box.append(col)
-        self.custom_reveal = Gtk.Revealer(child=self.custom_box)
-        self.custom_reveal.set_transition_type(Gtk.RevealerTransitionType.SLIDE_UP)
+        self.custom_reveal = self._fan_custom_reveal(
+            self.cpu_scale, self.gpu_scale, Gtk.Align.CENTER
+        )
 
         controls = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         controls.set_margin_bottom(4)
@@ -228,6 +393,13 @@ class NitroWindow(Adw.ApplicationWindow):
 
         page.append(overlay)
         page.append(controls)
+        grid = self._flow_grid(
+            self.home_ram, self.home_swap, self.home_net, self.home_disk, cols=4
+        )
+        grid.set_margin_start(12)
+        grid.set_margin_end(12)
+        grid.set_margin_bottom(10)
+        page.append(grid)
         return page
 
     def _card(self) -> Gtk.Box:
@@ -239,16 +411,135 @@ class NitroWindow(Adw.ApplicationWindow):
         box.set_margin_end(24)
         return box
 
+    def _fan_custom_reveal(
+        self, cpu_scale: Gtk.Scale, gpu_scale: Gtk.Scale, halign: Gtk.Align
+    ) -> Gtk.Revealer:
+        box = Gtk.Box(spacing=16)
+        box.set_halign(halign)
+        for scale, key in ((cpu_scale, "fan.cpu"), (gpu_scale, "fan.gpu")):
+            scale.set_hexpand(True)
+            scale.set_size_request(220, -1)
+            scale.set_draw_value(True)
+            scale.set_value(50)
+            scale.connect("value-changed", self._on_fan_scale)
+            col = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+            lab = Gtk.Label(xalign=0)
+            lab.add_css_class("muted")
+            self._i18n_bind(lab, key)
+            col.append(lab)
+            col.append(scale)
+            box.append(col)
+        reveal = Gtk.Revealer(child=box)
+        reveal.set_transition_type(Gtk.RevealerTransitionType.SLIDE_UP)
+        return reveal
+
     def _page_scenario(self) -> Gtk.Widget:
-        note = Gtk.Label(
-            label="Scenario — the same three operating modes and Auto / Max / Custom fans as Windows NitroSense. Use HOME for the live view.",
-            wrap=True,
-            xalign=0,
+        page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=16)
+        page.set_margin_top(16)
+        page.set_margin_bottom(16)
+        page.set_margin_start(24)
+        page.set_margin_end(24)
+
+        page.append(self._res_title("tab.scenario"))
+        intro = Gtk.Label(wrap=True, xalign=0)
+        intro.add_css_class("muted")
+        self._i18n_bind(intro, "scen.intro")
+        page.append(intro)
+
+        self._scen_now = Gtk.Label(label=t("scen.now", mode="—", fan="—", extra=""), xalign=0)
+        self._scen_now.add_css_class("muted")
+        page.append(self._scen_now)
+
+        modes = Gtk.Box(spacing=12, homogeneous=True)
+        for key, icon, title in (
+            ("quiet", "quiet", "mode.quiet"),
+            ("balanced", "balanced", "mode.default"),
+            ("performance", "performance", "mode.performance"),
+        ):
+            btn = _tile(icon, title, "mode-tile", self._on_mode, key)
+            self.scen_mode_buttons[key] = btn
+            modes.append(btn)
+        page.append(modes)
+
+        fans = Gtk.Box(spacing=12, homogeneous=True)
+        for key, icon, title in (
+            ("auto", "auto", "fan.auto"),
+            ("max", "max", "fan.max"),
+            ("custom", "custom", "fan.custom"),
+        ):
+            btn = _tile(icon, title, "fan-pill", self._on_fan_mode, key)
+            self.scen_fan_buttons[key] = btn
+            fans.append(btn)
+        page.append(fans)
+        self.scen_custom_reveal = self._fan_custom_reveal(
+            self.scen_cpu_scale, self.scen_gpu_scale, Gtk.Align.START
         )
-        note.add_css_class("muted")
-        card = self._card()
-        card.append(note)
-        return card
+        page.append(self.scen_custom_reveal)
+
+        rules = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        rules.add_css_class("panel")
+        head = Gtk.Box(spacing=10)
+        head_lab = Gtk.Label(xalign=0)
+        head_lab.add_css_class("ns-page-title")
+        self._i18n_bind(head_lab, "scen.rules")
+        head_lab.set_hexpand(True)
+        en_lab = Gtk.Label()
+        en_lab.add_css_class("muted")
+        self._i18n_bind(en_lab, "scen.apply")
+        self._scen_enable = Gtk.Switch()
+        self._scen_enable.set_valign(Gtk.Align.CENTER)
+        self._scen_enable.set_active(self._scen_cfg.enabled)
+        self._scen_enable.connect("notify::active", self._on_scen_enable)
+        head.append(head_lab)
+        head.append(en_lab)
+        head.append(self._scen_enable)
+        rules.append(head)
+
+        add_row = Gtk.Box(spacing=8)
+        self._scen_app_model = Gtk.StringList.new(["—"])
+        self._scen_app_drop = Gtk.DropDown(model=self._scen_app_model)
+        self._scen_app_drop.set_hexpand(True)
+        self._scen_mode_model = Gtk.StringList.new(
+            [t("mode.quiet"), t("mode.default"), t("mode.performance")]
+        )
+        self._scen_mode_drop = Gtk.DropDown(model=self._scen_mode_model)
+        self._scen_mode_drop.set_selected(1)
+        self._scen_fan_model = Gtk.StringList.new(
+            [t("fan.auto"), t("fan.max"), t("fan.custom")]
+        )
+        self._scen_fan_drop = Gtk.DropDown(model=self._scen_fan_model)
+        fan_idx = {"auto": 0, "max": 1, "custom": 2}.get(self._fan_mode, 0)
+        self._scen_fan_drop.set_selected(fan_idx)
+        add_btn = Gtk.Button()
+        self._i18n_bind(add_btn, "scen.add")
+        add_btn.add_css_class("suggested-action")
+        add_btn.connect("clicked", self._on_scen_add)
+        add_row.append(self._scen_app_drop)
+        add_row.append(self._scen_mode_drop)
+        add_row.append(self._scen_fan_drop)
+        add_row.append(add_btn)
+        rules.append(add_row)
+
+        hint = Gtk.Label(wrap=True, xalign=0)
+        hint.add_css_class("muted")
+        self._i18n_bind(hint, "scen.hint")
+        rules.append(hint)
+
+        self._scen_empty = Gtk.Label(wrap=True, xalign=0)
+        self._scen_empty.add_css_class("muted")
+        self._i18n_bind(self._scen_empty, "scen.empty")
+        rules.append(self._scen_empty)
+        self._scen_list = Gtk.ListBox()
+        self._scen_list.add_css_class("boxed-list")
+        rules.append(self._scen_list)
+        page.append(rules)
+        self._refresh_scen_list()
+
+        scrolled = Gtk.ScrolledWindow()
+        scrolled.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        scrolled.set_vexpand(True)
+        scrolled.set_child(page)
+        return scrolled
 
     def _page_monitoring(self) -> Gtk.Widget:
         grid = Gtk.Grid(column_spacing=12, row_spacing=12, column_homogeneous=True)
@@ -264,11 +555,9 @@ class NitroWindow(Adw.ApplicationWindow):
         grid.attach(self.chart_net_tx, 1, 4, 1, 1)
         grid.attach(self.chart_disk_r, 0, 5, 1, 1)
         grid.attach(self.chart_disk_w, 1, 5, 1, 1)
-        hint = Gtk.Label(
-            label="Last ~30 minutes (1 Hz). CPU, GPU, RAM, SWAP, network and disk I/O.",
-            wrap=True,
-            xalign=0,
-        )
+        hint = Gtk.Label(wrap=True, xalign=0)
+        hint.add_css_class("muted")
+        self._i18n_bind(hint, "mon.hint")
         hint.add_css_class("muted")
         card = self._card()
         card.append(grid)
@@ -279,66 +568,401 @@ class NitroWindow(Adw.ApplicationWindow):
         scrolled.set_child(card)
         return scrolled
 
-    def _page_resources(self) -> Gtk.Widget:
-        self._res_cpu = Gtk.Label(xalign=0, wrap=True)
-        self._res_mem = Gtk.Label(xalign=0, wrap=True)
-        self._res_net = Gtk.Label(xalign=0, wrap=True)
-        self._res_disk = Gtk.Label(xalign=0, wrap=True)
-        self._res_bat = Gtk.Label(xalign=0, wrap=True)
-        for lab in (
-            self._res_cpu,
-            self._res_mem,
-            self._res_net,
-            self._res_disk,
-            self._res_bat,
+    def _flow_grid(self, *tiles: Gtk.Widget, cols: int = 2) -> Gtk.FlowBox:
+        box = Gtk.FlowBox()
+        box.set_selection_mode(Gtk.SelectionMode.NONE)
+        box.set_homogeneous(True)
+        box.set_min_children_per_line(min(cols, 4))
+        box.set_max_children_per_line(cols)
+        box.set_row_spacing(10)
+        box.set_column_spacing(10)
+        box.set_hexpand(True)
+        box.set_valign(Gtk.Align.START)
+        box.add_css_class("ns-core-grid")
+        for tile in tiles:
+            box.append(tile)
+        return box
+
+    def _res_title(self, key: str) -> Gtk.Label:
+        lab = Gtk.Label(xalign=0)
+        lab.add_css_class("ns-page-title")
+        self._i18n_bind(lab, key)
+        return lab
+
+    def _i18n_bind(self, widget: Gtk.Widget, key: str, kind: str = "label") -> None:
+        self._i18n_items.append((widget, key, kind))
+        self._i18n_put(widget, key, kind)
+
+    def _i18n_put(self, widget: Gtk.Widget, key: str, kind: str) -> None:
+        text = t(key)
+        if kind == "stack":
+            page = self._tabs.get_page(widget)
+            if page is not None:
+                page.set_title(text)
+            return
+        if kind == "spark":
+            widget.title = text  # type: ignore[attr-defined]
+            widget.queue_draw()
+            return
+        if kind == "metric":
+            widget.title = text  # type: ignore[attr-defined]
+            widget.caption.set_text(text)  # type: ignore[attr-defined]
+            return
+        if kind == "placeholder":
+            widget.set_placeholder_text(text)
+            return
+        widget.set_label(text)
+
+    def _bind_mode_tiles(self) -> None:
+        for group in (
+            self.mode_buttons,
+            self.fan_buttons,
+            self.scen_mode_buttons,
+            self.scen_fan_buttons,
         ):
-            lab.add_css_class("muted")
+            for btn in group.values():
+                key = getattr(btn, "_ns_i18n", None)
+                if not key:
+                    continue
+                child = btn.get_child()
+                lab = child.get_last_child() if child is not None else None
+                if lab is not None:
+                    self._i18n_bind(lab, key)
 
-        proc_scroll = Gtk.ScrolledWindow()
-        proc_scroll.set_min_content_height(280)
-        proc_scroll.set_vexpand(True)
-        proc_scroll.set_child(self._proc_list)
+    def _apply_i18n(self) -> None:
+        for widget, key, kind in self._i18n_items:
+            self._i18n_put(widget, key, kind)
+        self._refresh_usb_labels()
+        if hasattr(self, "_scen_mode_model"):
+            self._busy = True
+            mode_sel = int(self._scen_mode_drop.get_selected())
+            self._scen_mode_model.splice(
+                0,
+                self._scen_mode_model.get_n_items(),
+                [t("mode.quiet"), t("mode.default"), t("mode.performance")],
+            )
+            if 0 <= mode_sel < 3:
+                self._scen_mode_drop.set_selected(mode_sel)
+            if hasattr(self, "_scen_fan_model"):
+                fan_sel = int(self._scen_fan_drop.get_selected())
+                self._scen_fan_model.splice(
+                    0,
+                    self._scen_fan_model.get_n_items(),
+                    [t("fan.auto"), t("fan.max"), t("fan.custom")],
+                )
+                if 0 <= fan_sel < 3:
+                    self._scen_fan_drop.set_selected(fan_sel)
+            self._busy = False
+        self._update_scen_now(None)
+        self._refresh_tgp_labels()
 
-        card = self._card()
-        card.append(Gtk.Label(label="Processor", xalign=0))
-        card.append(self.core_strip)
-        card.append(self._res_cpu)
-        card.append(Gtk.Label(label="Memory / swap", xalign=0))
-        card.append(self._res_mem)
-        card.append(Gtk.Label(label="Network", xalign=0))
-        card.append(self._res_net)
-        card.append(Gtk.Label(label="Storage", xalign=0))
-        card.append(self._res_disk)
-        card.append(Gtk.Label(label="Battery", xalign=0))
-        card.append(self._res_bat)
-        card.append(Gtk.Label(label="Processes", xalign=0))
-        card.append(self._proc_search)
-        card.append(proc_scroll)
-        hint = Gtk.Label(
-            label="Same coverage as GNOME Resources: CPU cores, memory, GPU (HOME), NICs, disks, battery, and a process list with End.",
-            wrap=True,
-            xalign=0,
-        )
-        hint.add_css_class("muted")
-        card.append(hint)
+    def _refresh_usb_labels(self) -> None:
+        model = self.usb_drop.get_model()
+        if not isinstance(model, Gtk.StringList):
+            return
+        labels = [
+            t("usb.off"),
+            t("usb.until", pct=10),
+            t("usb.until", pct=20),
+            t("usb.until", pct=30),
+        ]
+        selected = int(self.usb_drop.get_selected())
+        self._busy = True
+        model.splice(0, model.get_n_items(), labels)
+        if 0 <= selected < 4:
+            self.usb_drop.set_selected(selected)
+        self._busy = False
+
+    def _on_language(self, drop: Gtk.DropDown, _pspec) -> None:
+        if self._busy:
+            return
+        idx = int(drop.get_selected())
+        if 0 <= idx < len(LANGS):
+            set_lang(LANGS[idx])
+            save_lang(LANGS[idx])
+            self._apply_i18n()
+
+    def _hero(self) -> tuple[Gtk.Box, Gtk.Label, Gtk.Label]:
+        big = Gtk.Label(xalign=0)
+        big.add_css_class("ns-hero")
+        sub = Gtk.Label(xalign=0, wrap=True)
+        sub.add_css_class("muted")
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        box.append(big)
+        box.append(sub)
+        return box, big, sub
+
+    def _facts(self, keys: tuple[str, ...]) -> tuple[Gtk.Grid, dict[str, Gtk.Label]]:
+        grid = Gtk.Grid(column_spacing=28, row_spacing=8)
+        values: dict[str, Gtk.Label] = {}
+        for i, key in enumerate(keys):
+            col, row = i % 2, i // 2
+            cell = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+            k = Gtk.Label(xalign=0)
+            k.add_css_class("ns-fact-k")
+            fact_key = {
+                "Driver": "fact.driver",
+                "Firmware": "fact.firmware",
+                "Profile": "fact.profile",
+                "Choices": "fact.choices",
+                "Model": "fact.model",
+                "Threads": "fact.threads",
+                "Frequency": "fact.frequency",
+                "Temperature": "fact.temperature",
+                "Used": "fact.used",
+                "Available": "fact.available",
+                "Cached": "fact.cached",
+                "Swap": "fact.swap",
+                "Interface": "fact.interface",
+                "Type": "fact.type",
+                "IPv4": "fact.ipv4",
+                "Link": "fact.link",
+                "Status": "fact.status",
+                "Power": "fact.power",
+                "Energy": "fact.energy",
+                "Cycles": "fact.cycles",
+            }.get(key)
+            if fact_key:
+                self._i18n_bind(k, fact_key)
+            else:
+                k.set_text(key)
+            v = Gtk.Label(label="—", xalign=0)
+            v.add_css_class("ns-fact-v")
+            cell.append(k)
+            cell.append(v)
+            grid.attach(cell, col, row, 1, 1)
+            values[key] = v
+        return grid, values
+
+    def _res_sheet(self, *children: Gtk.Widget) -> Gtk.Widget:
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        box.set_margin_top(18)
+        box.set_margin_bottom(18)
+        box.set_margin_start(22)
+        box.set_margin_end(22)
+        for child in children:
+            box.append(child)
         scrolled = Gtk.ScrolledWindow()
         scrolled.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
         scrolled.set_vexpand(True)
-        scrolled.set_child(card)
+        scrolled.set_child(box)
         return scrolled
+
+    def _page_resources(self) -> Gtk.Widget:
+        self._cpu_hero_box, self._cpu_hero, self._cpu_sub = self._hero()
+        self._cpu_facts_grid, self._cpu_facts = self._facts(
+            ("Model", "Threads", "Frequency", "Temperature")
+        )
+        opt = Gtk.Box(spacing=12)
+        opt.add_css_class("ns-option-row")
+        opt_lab = Gtk.Label(xalign=0)
+        self._i18n_bind(opt_lab, "res.logical")
+        opt_lab.set_hexpand(True)
+        opt.append(opt_lab)
+        opt.append(self._cpu_logical)
+        cpu_page = self._res_sheet(
+            self._res_title("res.processor"),
+            self._cpu_hero_box,
+            self._cpu_facts_grid,
+            self._res_title("res.options"),
+            opt,
+            self._res_title("res.usage"),
+            self._core_host,
+            self.res_cpu_spark,
+        )
+
+        self._ram_hero_box, self._ram_hero, self._ram_sub = self._hero()
+        self._ram_facts_grid, self._ram_facts = self._facts(
+            ("Used", "Available", "Cached", "Swap")
+        )
+        ram_page = self._res_sheet(
+            self._res_title("res.memory"),
+            self._ram_hero_box,
+            self._ram_facts_grid,
+            self._res_title("res.usage"),
+            self._flow_grid(self.mem_used_tile, self.mem_swap_tile, cols=2),
+        )
+
+        gpu_page = self._res_sheet(
+            self._res_title("res.graphics"),
+            self._gpu_host,
+        )
+
+        self._net_hero_box, self._net_hero, self._net_sub = self._hero()
+        self._net_facts_grid, self._net_facts = self._facts(
+            ("Interface", "Type", "IPv4", "Link")
+        )
+        net_page = self._res_sheet(
+            self._res_title("res.network"),
+            self._net_hero_box,
+            self._net_facts_grid,
+            self._res_title("res.usage"),
+            self._flow_grid(self.net_rx_tile, self.net_tx_tile, cols=2),
+        )
+
+        storage_page = self._res_sheet(
+            self._res_title("res.storage"),
+            self._disk_host,
+        )
+
+        self._bat_hero_box, self._bat_hero, self._bat_sub = self._hero()
+        self._bat_facts_grid, self._bat_facts = self._facts(
+            ("Status", "Power", "Energy", "Cycles")
+        )
+        bat_page = self._res_sheet(
+            self._res_title("res.battery"),
+            self._bat_hero_box,
+            self._bat_facts_grid,
+            self._res_title("res.usage"),
+            self._flow_grid(self.bat_charge_tile, self.bat_power_tile, cols=2),
+        )
+
+        proc_head = Gtk.Box(spacing=12)
+        proc_head.add_css_class("ns-proc-head")
+        proc_head.set_margin_start(8)
+        proc_head.set_margin_end(8)
+        name_h = Gtk.Label(xalign=0, hexpand=True)
+        pid_h = Gtk.Label()
+        cpu_h = Gtk.Label()
+        mem_h = Gtk.Label()
+        act_h = Gtk.Label(label="")
+        self._i18n_bind(name_h, "proc.name")
+        self._i18n_bind(pid_h, "proc.pid")
+        self._i18n_bind(cpu_h, "proc.cpu")
+        self._i18n_bind(mem_h, "proc.memory")
+        pid_h.set_width_chars(7)
+        cpu_h.set_width_chars(6)
+        mem_h.set_width_chars(9)
+        act_h.set_width_chars(5)
+        for lab in (name_h, pid_h, cpu_h, mem_h, act_h):
+            lab.add_css_class("ns-proc-head")
+        proc_head.append(name_h)
+        proc_head.append(pid_h)
+        proc_head.append(cpu_h)
+        proc_head.append(mem_h)
+        proc_head.append(act_h)
+        proc_scroll = Gtk.ScrolledWindow()
+        proc_scroll.set_vexpand(True)
+        proc_scroll.set_min_content_height(360)
+        proc_scroll.set_child(self._proc_list)
+        proc_page = self._res_sheet(
+            self._res_title("res.processes"),
+            self._proc_search,
+            proc_head,
+            proc_scroll,
+        )
+
+        self._res_stack = Gtk.Stack()
+        self._res_stack.set_transition_type(Gtk.StackTransitionType.CROSSFADE)
+        self._res_stack.add_named(cpu_page, "cpu")
+        self._res_stack.add_named(ram_page, "memory")
+        self._res_stack.add_named(gpu_page, "gpu")
+        self._res_stack.add_named(net_page, "network")
+        self._res_stack.add_named(storage_page, "storage")
+        self._res_stack.add_named(bat_page, "battery")
+        self._res_stack.add_named(proc_page, "processes")
+
+        nav = Gtk.ListBox()
+        nav.add_css_class("ns-side")
+        nav.set_selection_mode(Gtk.SelectionMode.SINGLE)
+        nav.set_vexpand(True)
+        nav.set_size_request(176, -1)
+        self._res_nav_ids = (
+            "cpu",
+            "memory",
+            "gpu",
+            "network",
+            "storage",
+            "battery",
+            "processes",
+        )
+        for title_key in (
+            "res.processor",
+            "res.memory",
+            "res.graphics",
+            "res.network",
+            "res.storage",
+            "res.battery",
+            "res.processes",
+        ):
+            lab = Gtk.Label(xalign=0)
+            self._i18n_bind(lab, title_key)
+            nav.append(lab)
+        nav.connect("row-selected", self._on_res_nav)
+        start_res = os.environ.get("NITROSENSE_RES", "cpu")
+        idx = self._res_nav_ids.index(start_res) if start_res in self._res_nav_ids else 0
+        nav.select_row(nav.get_row_at_index(idx))
+
+        split = Gtk.Box(spacing=0)
+        split.add_css_class("ns-res-split")
+        split.set_vexpand(True)
+        split.append(nav)
+        split.append(self._res_stack)
+        self._res_stack.set_hexpand(True)
+        return split
+
+    def _on_res_nav(self, _list: Gtk.ListBox, row: Gtk.ListBoxRow | None) -> None:
+        if row is None:
+            return
+        idx = row.get_index()
+        if 0 <= idx < len(self._res_nav_ids):
+            self._res_stack.set_visible_child_name(self._res_nav_ids[idx])
 
     def _page_lighting(self) -> Gtk.Widget:
         self.timeout_switch.connect("state-set", self._on_flag, "backlight_timeout")
-        row = Gtk.Box(spacing=12)
-        row.append(Gtk.Label(label="Backlight timeout (30 s idle)", xalign=0, hexpand=True))
-        row.append(self.timeout_switch)
-        note = Gtk.Label(
-            label="ANV15-51 ships with a single-color keyboard. 4-zone RGB controls appear here only if four_zoned_kb shows up in sysfs.",
-            wrap=True,
-            xalign=0,
+        self.lcd_switch.connect("state-set", self._on_flag, "lcd_override")
+        self.night_switch.connect("state-set", self._on_night_light)
+        self.brightness_scale.set_draw_value(True)
+        self.brightness_scale.set_hexpand(True)
+        self.brightness_scale.set_value(screen_brightness() or 100)
+        self.brightness_scale.connect("value-changed", self._on_brightness)
+        self.night_temp_scale.set_draw_value(True)
+        self.night_temp_scale.set_hexpand(True)
+        enabled, temp = night_light()
+        self.night_temp_scale.set_value(temp or 2700)
+        self.night_temp_scale.connect("value-changed", self._on_night_temp)
+        if enabled is not None:
+            self.night_switch.set_active(enabled)
+
+        click = Gtk.GestureClick()
+        click.set_button(1)
+        click.connect("released", self._on_kb_deck_click)
+        self.kb_deck.add_controller(click)
+        self.kb_deck.set_cursor_from_name("pointer")
+
+        kb = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        kb.add_css_class("panel")
+        leds = Gtk.Box(spacing=8)
+        self._led_chips = {}
+        for key, i18n_key in (("caps", "light.caps"), ("num", "light.num"), ("scroll", "light.scroll")):
+            chip = Gtk.Button()
+            chip.add_css_class("ns-led")
+            chip.set_cursor_from_name("pointer")
+            chip.connect("clicked", self._on_lock_led, key)
+            self._i18n_bind(chip, i18n_key)
+            self._led_chips[key] = chip
+            leds.append(chip)
+        kb.append(
+            self._option_row("light.timeout", self.timeout_switch, "light.timeout_hint")
         )
-        note.add_css_class("muted")
+        kb.append(leds)
+
+        display = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        display.add_css_class("panel")
+        self._brightness_lab = Gtk.Label(xalign=0)
+        self._i18n_bind(self._brightness_lab, "light.brightness")
+        display.append(self._brightness_lab)
+        display.append(self.brightness_scale)
+        self._lcd_row = self._option_row("light.lcd", self.lcd_switch)
+        display.append(self._lcd_row)
+
+        night = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        night.add_css_class("panel")
+        night.append(self._option_row("light.night", self.night_switch, "light.night_hint"))
+        night.append(self.night_temp_scale)
+
         self._kb_rgb_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        self._kb_rgb_box.add_css_class("panel")
         modes = Gtk.Box(spacing=8)
         for idx, name in enumerate(
             ("Static", "Breathing", "Neon", "Wave", "Shifting", "Zoom", "Meteor", "Twinkling")
@@ -346,49 +970,153 @@ class NitroWindow(Adw.ApplicationWindow):
             btn = Gtk.Button(label=name)
             btn.connect("clicked", self._on_rgb_mode, idx)
             modes.append(btn)
-        self._kb_rgb_box.append(Gtk.Label(label="Four-zone RGB", xalign=0))
+        rgb_title = Gtk.Label(xalign=0)
+        rgb_title.add_css_class("ns-page-title")
+        self._i18n_bind(rgb_title, "light.rgb")
+        self._kb_rgb_box.append(rgb_title)
         self._kb_rgb_box.append(modes)
-        card = self._card()
-        card.append(row)
-        card.append(note)
-        card.append(self._kb_rgb_box)
-        return card
+
+        return self._res_sheet(
+            self._res_title("light.page"),
+            self.kb_deck,
+            self._res_title("light.keyboard"),
+            kb,
+            self._res_title("light.display"),
+            display,
+            self._res_title("light.night_section"),
+            night,
+            self._kb_rgb_box,
+        )
+
+    def _option_row(self, label_key: str, widget: Gtk.Widget, hint_key: str | None = None) -> Gtk.Widget:
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        box.add_css_class("ns-option-row")
+        line = Gtk.Box(spacing=12)
+        lab = Gtk.Label(xalign=0, hexpand=True)
+        self._i18n_bind(lab, label_key)
+        line.append(lab)
+        line.append(widget)
+        box.append(line)
+        if hint_key:
+            note = Gtk.Label(wrap=True, xalign=0)
+            note.add_css_class("muted")
+            self._i18n_bind(note, hint_key)
+            box.append(note)
+        return box
 
     def _page_settings(self) -> Gtk.Widget:
         self.limit_switch.connect("state-set", self._on_flag, "battery_limiter")
-        self.lcd_switch.connect("state-set", self._on_flag, "lcd_override")
         self.boot_switch.connect("state-set", self._on_flag, "boot_animation_sound")
         self.usb_drop.connect("notify::selected", self._on_usb)
         self.calibrate_btn.connect("clicked", self._on_calibrate)
-        self._drv_label = Gtk.Label(xalign=0, wrap=True)
+        self.autostart_switch.set_active(_autostart_on())
+        self.autostart_switch.connect("state-set", self._on_autostart)
+        hotkey_unit = Path.home() / ".config/systemd/user" / HOTKEY_UNIT
+        self.hotkey_switch.set_sensitive(hotkey_unit.is_file())
+        self.hotkey_switch.set_active(_hotkey_on())
+        self.hotkey_switch.connect("state-set", self._on_hotkey)
 
-        def row(label: str, widget: Gtk.Widget) -> Gtk.Box:
-            box = Gtk.Box(spacing=12)
-            lab = Gtk.Label(label=label, xalign=0, hexpand=True)
-            box.append(lab)
-            box.append(widget)
-            return box
-
-        setup_btn = Gtk.Button(label="Install Linuwu driver (setup.sh)")
+        self._drv_facts_grid, self._drv_facts = self._facts(
+            ("Driver", "Firmware", "Profile", "Choices")
+        )
+        setup_btn = Gtk.Button()
+        self._i18n_bind(setup_btn, "set.install")
         setup_btn.connect("clicked", self._on_setup_help)
-        card = self._card()
-        card.append(self._drv_label)
-        card.append(row("Battery charge limit 80%", self.limit_switch))
-        card.append(row("USB charging while off", self.usb_drop))
-        card.append(self.calibrate_btn)
-        card.append(row("LCD override", self.lcd_switch))
-        card.append(row("Boot animation / sound", self.boot_switch))
-        card.append(setup_btn)
-        return card
+        setup_btn.set_halign(Gtk.Align.START)
+        driver = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        driver.add_css_class("panel")
+        driver.append(self._drv_facts_grid)
+        driver.append(setup_btn)
+
+        battery = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        battery.append(self._option_row("set.limit", self.limit_switch, "set.limit_hint"))
+        battery.append(self._option_row("set.usb", self.usb_drop, "set.usb_hint"))
+        battery.append(
+            self._option_row("set.calibrate", self.calibrate_btn, "set.calibrate_hint")
+        )
+
+        self._boot_row = self._option_row("set.boot", self.boot_switch, "set.boot_hint")
+        self._boot_row.set_visible(False)
+
+        startup = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        startup.append(
+            self._option_row("set.autostart", self.autostart_switch, "set.autostart_hint")
+        )
+        startup.append(self._option_row("set.hotkey", self.hotkey_switch, "set.hotkey_hint"))
+        self.lang_drop.set_selected(LANGS.index(ui_lang()) if ui_lang() in LANGS else 0)
+        self.lang_drop.connect("notify::selected", self._on_language)
+        startup.append(self._option_row("set.language", self.lang_drop, "set.language_hint"))
+
+        tgp = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        tgp.add_css_class("panel")
+        self._tgp_now = Gtk.Label(xalign=0)
+        self._tgp_now.add_css_class("muted")
+        tgp.append(self._tgp_now)
+        tgp_hint = Gtk.Label(wrap=True, xalign=0)
+        tgp_hint.add_css_class("muted")
+        self._i18n_bind(tgp_hint, "set.tgp_hint")
+        tgp.append(tgp_hint)
+        tgp_row = Gtk.Box(spacing=12, homogeneous=True)
+        for key, icon in (("default", "balanced"), ("boost", "performance")):
+            btn = Gtk.Button()
+            btn.add_css_class("mode-tile")
+            box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, halign=Gtk.Align.CENTER)
+            box.append(ModeIcon(icon, size=46))
+            lab = Gtk.Label()
+            lab.add_css_class("ns-tile-label")
+            box.append(lab)
+            btn.set_child(box)
+            btn.connect("clicked", self._on_tgp, key)
+            btn._ns_lab = lab  # type: ignore[attr-defined]
+            self.tgp_buttons[key] = btn
+            tgp_row.append(btn)
+        tgp.append(tgp_row)
+        self._tgp_missing = Gtk.Label(wrap=True, xalign=0)
+        self._tgp_missing.add_css_class("muted")
+        self._i18n_bind(self._tgp_missing, "set.tgp_missing")
+        tgp.append(self._tgp_missing)
+        self._tgp_panel = tgp
+        self._refresh_tgp_labels()
+
+        about_lab = Gtk.Label(
+            label=(
+                f"NitroSense {__version__}  ·  {_dmi('product_name')}  ·  "
+                f"{_dmi('board_name')}  ·  BIOS {_dmi('product_version')}"
+            ),
+            wrap=True,
+            xalign=0,
+        )
+        about_lab.add_css_class("muted")
+        github = Gtk.LinkButton(uri=GITHUB_URL, label="github.com/rodriguesfas/nitrosense")
+        github.set_halign(Gtk.Align.START)
+        driver.append(about_lab)
+        driver.append(github)
+
+        return self._res_sheet(
+            self._res_title("set.driver"),
+            driver,
+            self._res_title("set.tgp"),
+            tgp,
+            self._res_title("set.battery"),
+            battery,
+            self._res_title("set.startup"),
+            startup,
+            self._boot_row,
+        )
 
     def _spin(self) -> bool:
-        self.hero.tick(self._rpm_visual)
+        self.hero.tick(self._rpm_cpu, self._rpm_gpu)
+        self.kb_deck.tick()
         return True
 
     def _tick(self) -> bool:
         self.hw.refresh_paths()
         snap = self.hw.snapshot()
         sensors = read_sensors()
+        if snap.fan_cpu_rpm is not None:
+            self._rpm_cpu = float(snap.fan_cpu_rpm)
+        if snap.fan_gpu_rpm is not None:
+            self._rpm_gpu = float(snap.fan_gpu_rpm)
         if snap.fan_cpu_rpm is not None or snap.fan_gpu_rpm is not None:
             vals = [v for v in (snap.fan_cpu_rpm, snap.fan_gpu_rpm) if v]
             if vals:
@@ -413,43 +1141,21 @@ class NitroWindow(Adw.ApplicationWindow):
         if disk is not None:
             self.chart_disk_r.push(disk.read_mbps)
             self.chart_disk_w.push(disk.write_mbps)
-            if disk.used_gb is not None and disk.total_gb is not None:
-                disk_txt = f"{disk.used_gb:.0f}/{disk.total_gb:.0f} GB"
-                if disk.pct is not None:
-                    disk_txt += f"  {disk.pct:.0f}%"
-                self.disk_bar.update(disk_txt, disk.pct)
-            elif disk.read_mbps is not None:
-                self.disk_bar.update(
-                    f"↓{disk.read_mbps:.1f}  ↑{disk.write_mbps:.1f} MB/s",
-                    None,
-                )
-        if sensors.ram_used_gb is not None and sensors.ram_total_gb is not None:
-            ram_txt = f"{sensors.ram_used_gb:.1f}/{sensors.ram_total_gb:.0f} GB"
-            if sensors.ram_pct is not None:
-                ram_txt += f"  {sensors.ram_pct:.0f}%"
-            self.ram_bar.update(ram_txt, sensors.ram_pct)
-        if sensors.swap_total_gb is not None and sensors.swap_total_gb <= 0:
-            self.swap_bar.update("off", 0.0)
-        elif sensors.swap_used_gb is not None and sensors.swap_total_gb is not None:
-            swap_txt = f"{sensors.swap_used_gb:.1f}/{sensors.swap_total_gb:.0f} GB"
-            if sensors.swap_pct is not None:
-                swap_txt += f"  {sensors.swap_pct:.0f}%"
-            self.swap_bar.update(swap_txt, sensors.swap_pct)
-        if sensors.net_iface:
-            rx = sensors.net_rx_mbps
-            tx = sensors.net_tx_mbps
-            if rx is None or tx is None:
-                net_txt = sensors.net_iface
-            else:
-                net_txt = f"↓{rx:.1f}  ↑{tx:.1f} Mb/s"
-            self.net_bar.update(net_txt, sensors.net_pct)
-        else:
-            self.net_bar.update("—", None)
-        self.core_strip.update(sensors.cpu_cores)
+        self._sync_home_tiles(sensors)
+        self._sync_core_grid(sensors)
+        self.res_cpu_spark.push(sensors.cpu_load)
+        self._sync_gpus(sensors.gpus, snap)
+        rx = sensors.net_rx_mbps
+        tx = sensors.net_tx_mbps
         self._proc_rows = sensors.processes
         self._proc_tick = getattr(self, "_proc_tick", 0) + 1
         if self._proc_tick % 2 == 0:
             self._refresh_proc_list()
+            if hasattr(self, "_scen_list"):
+                self._refresh_scen_list()
+        self._refresh_scen_apps(sensors)
+        if self._apply_scenario(sensors, snap):
+            snap = self.hw.snapshot()
         self._apply_hw(snap, sensors)
         return True
 
@@ -459,13 +1165,11 @@ class NitroWindow(Adw.ApplicationWindow):
 
         current_mode = None
         for key, _label, fw in NITRO_MODES:
-            btn = self.mode_buttons[key]
-            on = snap.profile == fw
-            if on:
+            if snap.profile == fw:
                 current_mode = key
-                btn.add_css_class("active")
-            else:
-                btn.remove_css_class("active")
+                break
+        self._set_active_map(self.mode_buttons, current_mode)
+        self._set_active_map(self.scen_mode_buttons, current_mode)
         if current_mode:
             self.hero.set_mode(current_mode)
 
@@ -476,18 +1180,17 @@ class NitroWindow(Adw.ApplicationWindow):
                 self._fan_mode = "max"
             elif not snap.fan_auto and (snap.fan_cpu_pct or snap.fan_gpu_pct):
                 self._fan_mode = "custom"
-        for key, btn in self.fan_buttons.items():
-            if key == self._fan_mode:
-                btn.add_css_class("active")
-            else:
-                btn.remove_css_class("active")
-        self.custom_reveal.set_reveal_child(self._fan_mode == "custom")
+        self._set_active_map(self.fan_buttons, self._fan_mode)
+        self._set_active_map(self.scen_fan_buttons, self._fan_mode)
+        custom = self._fan_mode == "custom"
+        self.custom_reveal.set_reveal_child(custom)
+        if hasattr(self, "scen_custom_reveal"):
+            self.scen_custom_reveal.set_reveal_child(custom)
+        self._update_scen_now(current_mode)
 
         self._busy = True
-        if snap.fan_cpu_pct is not None and abs(self.cpu_scale.get_value() - snap.fan_cpu_pct) >= 1:
-            self.cpu_scale.set_value(snap.fan_cpu_pct)
-        if snap.fan_gpu_pct is not None and abs(self.gpu_scale.get_value() - snap.fan_gpu_pct) >= 1:
-            self.gpu_scale.set_value(snap.fan_gpu_pct)
+        # Custom sliders are the setpoint. Do not copy firmware/PWM back
+        # onto them — that snaps the thumb to 100 while the user is dragging.
         self._set_switch(self.limit_switch, caps.battery_limiter, snap.battery_limiter)
         self._set_switch(self.timeout_switch, caps.backlight_timeout, snap.backlight_timeout)
         self._set_switch(self.lcd_switch, caps.lcd_override, snap.lcd_override)
@@ -497,28 +1200,15 @@ class NitroWindow(Adw.ApplicationWindow):
             self.usb_drop.set_selected(self.usb_values.index(snap.usb_charging))
         self.calibrate_btn.set_sensitive(caps.battery_calibration)
         self._kb_rgb_box.set_visible(caps.rgb_keyboard)
+        if hasattr(self, "_lcd_row"):
+            self._lcd_row.set_visible(caps.lcd_override)
+        if hasattr(self, "_boot_row"):
+            self._boot_row.set_visible(caps.boot_animation)
+        self.kb_deck.set_timeout(bool(snap.backlight_timeout))
         self._busy = False
+        self._sync_session_lighting()
 
-        if sensors.ram_used_gb is not None and sensors.ram_total_gb is not None:
-            self._ram_chip.set_text(
-                f"RAM  {sensors.ram_used_gb:.1f}/{sensors.ram_total_gb:.0f} GB"
-            )
-        if sensors.swap_total_gb is not None and sensors.swap_total_gb <= 0:
-            self._swap_chip.set_text("SWAP  off")
-        elif sensors.swap_used_gb is not None and sensors.swap_total_gb is not None:
-            self._swap_chip.set_text(
-                f"SWAP  {sensors.swap_used_gb:.1f}/{sensors.swap_total_gb:.0f} GB"
-            )
-        if sensors.net_iface:
-            kind = sensors.net_kind or "net"
-            if sensors.net_rx_mbps is None:
-                self._net_chip.set_text(f"{kind.upper()}  {sensors.net_iface}")
-            else:
-                ip = f"  {sensors.net_ipv4}" if sensors.net_ipv4 else ""
-                self._net_chip.set_text(
-                    f"{kind.upper()}  ↓{sensors.net_rx_mbps:.1f} ↑{sensors.net_tx_mbps:.1f}{ip}"
-                )
-        self._fill_resource_labels(sensors)
+        self._fill_resource_labels(sensors, snap)
         if sensors.on_ac:
             self._chip.set_text("AC  ·  " + (f"{sensors.battery_pct}%" if sensors.battery_pct is not None else "—"))
         else:
@@ -526,14 +1216,18 @@ class NitroWindow(Adw.ApplicationWindow):
                 "BATTERY  ·  " + (f"{sensors.battery_pct}%" if sensors.battery_pct is not None else "—")
             )
         drv = {"linuwu": "Linuwu Sense", "acer_wmi": "acer_wmi", "none": "no fan driver"}[caps.driver]
-        self._status.set_text(
-            f"{drv}   ·   {snap.profile or 'no profile'}   ·   {sensors.cpu_name or 'CPU'}   ·   {sensors.gpu_name or 'GPU'}"
-        )
-        self._drv_label.set_markup(
-            f"<b>Driver</b>  {drv}\n"
-            f"<b>Firmware profile</b>  {snap.profile or '—'}\n"
-            f"<b>Choices</b>  {' '.join(snap.profile_choices) or '—'}"
-        )
+        fw = "—"
+        if self.hw.sense is not None:
+            try:
+                fw = (self.hw.sense / "version").read_text(encoding="utf-8").strip() or "—"
+            except OSError:
+                fw = "—"
+        if hasattr(self, "_drv_facts"):
+            self._drv_facts["Driver"].set_text(drv)
+            self._drv_facts["Firmware"].set_text(fw)
+            self._drv_facts["Profile"].set_text(snap.profile or "—")
+            self._drv_facts["Choices"].set_text(" ".join(snap.profile_choices) or "—")
+        self._sync_tgp(sensors)
 
     def _set_switch(self, widget: Gtk.Switch, enabled: bool, value: bool | None) -> None:
         widget.set_sensitive(enabled)
@@ -542,6 +1236,59 @@ class NitroWindow(Adw.ApplicationWindow):
 
     def _toast(self, message: str) -> None:
         self._status.set_text(message)
+        self._status.set_visible(True)
+
+    def _nvidia_gpu(self, sensors: Sensors | None) -> GpuInfo | None:
+        if sensors is None:
+            return None
+        return next((g for g in sensors.gpus if g.vendor == "NVIDIA"), None)
+
+    def _refresh_tgp_labels(self) -> None:
+        default = self._tgp_default_w or 60
+        boost = self._tgp_max_w or 75
+        mapping = (("default", "set.tgp_default", default), ("boost", "set.tgp_boost", boost))
+        for key, i18n, watts in mapping:
+            btn = self.tgp_buttons.get(key)
+            if btn is None:
+                continue
+            lab = getattr(btn, "_ns_lab", None)
+            if lab is not None:
+                lab.set_text(t(i18n, watts=watts))
+
+    def _sync_tgp(self, sensors: Sensors) -> None:
+        if not self.tgp_buttons:
+            return
+        gpu = self._nvidia_gpu(sensors)
+        has = gpu is not None and (
+            gpu.power_default_w is not None or gpu.power_max_w is not None
+        )
+        if hasattr(self, "_tgp_missing"):
+            self._tgp_missing.set_visible(not has)
+        for btn in self.tgp_buttons.values():
+            btn.set_sensitive(has)
+            btn.set_visible(has)
+        if not has:
+            if hasattr(self, "_tgp_now"):
+                self._tgp_now.set_text(t("set.tgp_now", watts="—"))
+            self._set_active_map(self.tgp_buttons, None)
+            return
+        default = int(round(gpu.power_default_w or 60))
+        boost = int(round(gpu.power_max_w or 75))
+        current = (
+            int(round(gpu.power_limit_w)) if gpu.power_limit_w is not None else default
+        )
+        self._tgp_default_w = default
+        self._tgp_max_w = boost
+        self._refresh_tgp_labels()
+        self._tgp_now.set_text(t("set.tgp_now", watts=current))
+        active = "boost" if current >= boost - 1 else "default"
+        self._set_active_map(self.tgp_buttons, active)
+
+    def _on_tgp(self, _btn, key: str) -> None:
+        watts = self._tgp_max_w if key == "boost" else self._tgp_default_w
+        if watts is None:
+            return
+        self._run(set_tgp, int(watts))
 
     def _run(self, fn, *args) -> None:
         try:
@@ -549,35 +1296,288 @@ class NitroWindow(Adw.ApplicationWindow):
         except Exception as exc:  # noqa: BLE001
             self._toast(str(exc))
 
-    def _on_mode(self, _btn, key: str) -> None:
-        fw = next(item[2] for item in NITRO_MODES if item[0] == key)
-        self.hero.set_mode(key)
-        self._run(self.hw.set_profile, fw)
-
-    def _on_fan_mode(self, _btn, key: str) -> None:
-        self._fan_user = True
-        self._fan_mode = key
-        for name, btn in self.fan_buttons.items():
-            if name == key:
+    def _set_active_map(self, buttons: dict[str, Gtk.Button], key: str | None) -> None:
+        for name, btn in buttons.items():
+            on = name == key
+            if on:
                 btn.add_css_class("active")
             else:
                 btn.remove_css_class("active")
-        self.custom_reveal.set_reveal_child(key == "custom")
+            child = btn.get_child()
+            icon = child.get_first_child() if child is not None else None
+            if isinstance(icon, ModeIcon):
+                icon.set_active(on)
+            lab = icon.get_next_sibling() if icon is not None else None
+            if isinstance(lab, Gtk.Label):
+                if on:
+                    lab.add_css_class("ns-tile-label-on")
+                else:
+                    lab.remove_css_class("ns-tile-label-on")
+
+    def _update_scen_now(self, current_mode: str | None) -> None:
+        if not hasattr(self, "_scen_now"):
+            return
+        labels = {
+            "quiet": t("mode.quiet"),
+            "balanced": t("mode.default"),
+            "performance": t("mode.performance"),
+        }
+        mode_txt = labels.get(current_mode or "", current_mode or "—")
+        fan_key = {"auto": "fan.auto", "max": "fan.max", "custom": "fan.custom"}.get(
+            self._fan_mode or ""
+        )
+        fan_txt = t(fan_key) if fan_key else (self._fan_mode or "—")
+        extra = t("scen.rule_extra", name=self._scen_active_match) if self._scen_active_match else ""
+        self._scen_now.set_text(t("scen.now", mode=mode_txt, fan=fan_txt, extra=extra))
+
+    def _refresh_scen_apps(self, sensors: Sensors) -> None:
+        if not hasattr(self, "_scen_app_model"):
+            return
+        names = sorted(
+            {
+                p.name
+                for p in sensors.processes
+                if p.name
+                and p.name not in _SKIP_SCENARIO_APPS
+                and not p.name.startswith("[")
+            },
+            key=str.lower,
+        )
+        if names == self._scen_app_names:
+            return
+        prev = None
+        sel = self._scen_app_drop.get_selected()
+        if 0 <= sel < self._scen_app_model.get_n_items():
+            prev = self._scen_app_model.get_string(sel)
+        additions = names or ["—"]
+        self._scen_app_model.splice(0, self._scen_app_model.get_n_items(), additions)
+        self._scen_app_names = names
+        if prev in additions:
+            self._scen_app_drop.set_selected(additions.index(prev))
+
+    def _refresh_scen_list(self) -> None:
+        if not hasattr(self, "_scen_list"):
+            return
+        labels = {
+            "quiet": t("mode.quiet"),
+            "balanced": t("mode.default"),
+            "performance": t("mode.performance"),
+        }
+        fans = {
+            "auto": t("fan.auto"),
+            "max": t("fan.max"),
+            "custom": t("fan.custom"),
+        }
+        running = {p.name.lower() for p in getattr(self, "_proc_rows", [])}
+        sig = (
+            tuple((r.match, r.mode, r.fans, r.cpu, r.gpu) for r in self._scen_cfg.rules),
+            frozenset(r.match.lower() for r in self._scen_cfg.rules if r.match.lower() in running),
+        )
+        if sig == getattr(self, "_scen_list_sig", None):
+            return
+        self._scen_list_sig = sig
+        while True:
+            row = self._scen_list.get_row_at_index(0)
+            if row is None:
+                break
+            self._scen_list.remove(row)
+        self._scen_empty.set_visible(not self._scen_cfg.rules)
+        for rule in self._scen_cfg.rules:
+            box = Gtk.Box(spacing=12)
+            box.set_margin_top(8)
+            box.set_margin_bottom(8)
+            box.set_margin_start(12)
+            box.set_margin_end(12)
+            name = Gtk.Label(label=rule.match, xalign=0)
+            name.set_hexpand(True)
+            name.add_css_class("ns-rule-app")
+            mode_txt = labels.get(rule.mode, rule.mode)
+            fan_txt = fans.get(rule.fans, rule.fans)
+            if rule.fans == "custom":
+                detail = t(
+                    "scen.rule_custom",
+                    mode=mode_txt,
+                    fans=fan_txt,
+                    cpu=rule.cpu,
+                    gpu=rule.gpu,
+                )
+            elif rule.fans in fans:
+                detail = t("scen.rule", mode=mode_txt, fans=fan_txt)
+            else:
+                detail = mode_txt
+            mode = Gtk.Label(label=detail)
+            mode.add_css_class("muted")
+            live = rule.match.lower() in running
+            status = Gtk.Label(label=t("scen.running") if live else "")
+            if live:
+                status.add_css_class("ns-live")
+            rm = Gtk.Button(label=t("scen.remove"))
+            rm.connect("clicked", self._on_scen_remove, rule.match)
+            box.append(name)
+            box.append(mode)
+            box.append(status)
+            box.append(rm)
+            row = Gtk.ListBoxRow()
+            row.set_child(box)
+            self._scen_list.append(row)
+
+    def _fans_match_rule(self, rule: Rule, snap) -> bool:
+        fans = rule.fans if rule.fans in ("auto", "max", "custom") else ""
+        if not fans:
+            return True
+        if fans == "auto":
+            return bool(snap.fan_auto)
+        if fans == "max":
+            return (
+                not snap.fan_auto
+                and (snap.fan_cpu_pct or 0) >= 99
+                and (snap.fan_gpu_pct or 0) >= 99
+            )
+        cpu = max(1, min(100, int(rule.cpu)))
+        gpu = max(1, min(100, int(rule.gpu)))
+        return (
+            not snap.fan_auto
+            and snap.fan_cpu_pct == cpu
+            and snap.fan_gpu_pct == gpu
+        )
+
+    def _apply_fan_rule(self, rule: Rule) -> None:
+        fans = rule.fans if rule.fans in ("auto", "max", "custom") else "auto"
+        self._fan_mode = fans
+        if fans == "auto":
+            self._run(self.hw.set_fans, 0, 0, True)
+        elif fans == "max":
+            self._run(self.hw.set_fans, 100, 100, False)
+        else:
+            cpu = max(1, min(100, int(rule.cpu)))
+            gpu = max(1, min(100, int(rule.gpu)))
+            self._custom_cpu = cpu
+            self._custom_gpu = gpu
+            self._set_fan_scales(cpu, gpu)
+            self._run(self.hw.set_fans, cpu, gpu, False)
+        self._set_active_map(self.fan_buttons, fans)
+        self._set_active_map(self.scen_fan_buttons, fans)
+        custom = fans == "custom"
+        self.custom_reveal.set_reveal_child(custom)
+        if hasattr(self, "scen_custom_reveal"):
+            self.scen_custom_reveal.set_reveal_child(custom)
+
+    def _apply_scenario(self, sensors: Sensors, snap) -> bool:
+        if not self._scen_cfg.enabled or not self._scen_cfg.rules:
+            self._scen_active_match = None
+            return False
+        if time.monotonic() < self._mode_manual_until:
+            return False
+        names = {p.name.lower() for p in sensors.processes}
+        for rule in self._scen_cfg.rules:
+            needle = rule.match.lower()
+            if needle not in names:
+                continue
+            self._scen_active_match = rule.match
+            fw = next(item[2] for item in NITRO_MODES if item[0] == rule.mode)
+            changed = False
+            if snap.profile != fw:
+                self._run(self.hw.set_profile, fw)
+                self.hero.set_mode(rule.mode)
+                changed = True
+            if not self._fans_match_rule(rule, snap):
+                self._apply_fan_rule(rule)
+                changed = True
+            return changed
+        self._scen_active_match = None
+        return False
+
+    def _on_scen_enable(self, switch: Gtk.Switch, _pspec) -> None:
+        if self._busy:
+            return
+        self._scen_cfg.enabled = switch.get_active()
+        if not self._scen_cfg.enabled:
+            self._scen_active_match = None
+        save_scenarios(self._scen_cfg)
+
+    def _on_scen_add(self, _btn) -> None:
+        idx = self._scen_app_drop.get_selected()
+        if idx < 0 or idx >= self._scen_app_model.get_n_items():
+            return
+        name = self._scen_app_model.get_string(idx)
+        if not name or name == "—":
+            return
+        modes = ("quiet", "balanced", "performance")
+        fans = ("auto", "max", "custom")
+        sel = self._scen_mode_drop.get_selected()
+        mode = modes[sel] if 0 <= sel < len(modes) else "balanced"
+        fan_sel = self._scen_fan_drop.get_selected() if hasattr(self, "_scen_fan_drop") else 0
+        fan = fans[fan_sel] if 0 <= fan_sel < len(fans) else "auto"
+        cpu = max(1, min(100, int(self._custom_cpu)))
+        gpu = max(1, min(100, int(self._custom_gpu)))
+        self._scen_cfg.rules = [r for r in self._scen_cfg.rules if r.match.lower() != name.lower()]
+        self._scen_cfg.rules.append(Rule(match=name, mode=mode, fans=fan, cpu=cpu, gpu=gpu))
+        save_scenarios(self._scen_cfg)
+        self._refresh_scen_list()
+
+    def _on_scen_remove(self, _btn, match: str) -> None:
+        self._scen_cfg.rules = [r for r in self._scen_cfg.rules if r.match != match]
+        if self._scen_active_match == match:
+            self._scen_active_match = None
+        save_scenarios(self._scen_cfg)
+        self._refresh_scen_list()
+
+    def _on_mode(self, _btn, key: str) -> None:
+        self._mode_manual_until = time.monotonic() + 45
+        fw = next(item[2] for item in NITRO_MODES if item[0] == key)
+        self.hero.set_mode(key)
+        self._set_active_map(self.mode_buttons, key)
+        self._set_active_map(self.scen_mode_buttons, key)
+        self._run(self.hw.set_profile, fw)
+
+    def _set_fan_scales(self, cpu: int, gpu: int) -> None:
+        self._busy = True
+        self.cpu_scale.set_value(cpu)
+        self.scen_cpu_scale.set_value(cpu)
+        self.gpu_scale.set_value(gpu)
+        self.scen_gpu_scale.set_value(gpu)
+        self._busy = False
+
+    def _on_fan_mode(self, _btn, key: str) -> None:
+        self._mode_manual_until = time.monotonic() + 45
+        self._fan_user = True
+        self._fan_mode = key
+        self._set_active_map(self.fan_buttons, key)
+        self._set_active_map(self.scen_fan_buttons, key)
+        custom = key == "custom"
+        self.custom_reveal.set_reveal_child(custom)
+        if hasattr(self, "scen_custom_reveal"):
+            self.scen_custom_reveal.set_reveal_child(custom)
         if key == "auto":
             self._run(self.hw.set_fans, 0, 0, True)
         elif key == "max":
             self._run(self.hw.set_fans, 100, 100, False)
         else:
-            cpu = max(1, int(self.cpu_scale.get_value()))
-            gpu = max(1, int(self.gpu_scale.get_value()))
+            cpu = max(1, min(100, int(self._custom_cpu)))
+            gpu = max(1, min(100, int(self._custom_gpu)))
+            self._set_fan_scales(cpu, gpu)
             self._run(self.hw.set_fans, cpu, gpu, False)
 
-    def _on_fan_scale(self, _scale: Gtk.Scale) -> None:
+    def _on_fan_scale(self, scale: Gtk.Scale) -> None:
         if self._busy or self._fan_mode != "custom":
             return
+        self._mode_manual_until = time.monotonic() + 45
+        peer = None
+        if scale in (self.cpu_scale, self.scen_cpu_scale):
+            peer = self.scen_cpu_scale if scale is self.cpu_scale else self.cpu_scale
+        elif scale in (self.gpu_scale, self.scen_gpu_scale):
+            peer = self.scen_gpu_scale if scale is self.gpu_scale else self.gpu_scale
+        if peer is not None and abs(peer.get_value() - scale.get_value()) >= 0.5:
+            self._busy = True
+            peer.set_value(scale.get_value())
+            self._busy = False
+        cpu = max(1, int(self.cpu_scale.get_value()))
+        gpu = max(1, int(self.gpu_scale.get_value()))
+        self._custom_cpu = cpu
+        self._custom_gpu = gpu
         if self._fan_scale_to is not None:
             GLib.source_remove(self._fan_scale_to)
-        self._fan_scale_to = GLib.timeout_add(280, self._flush_fan_scale)
+        self._fan_scale_to = GLib.timeout_add(180, self._flush_fan_scale)
 
     def _flush_fan_scale(self) -> bool:
         self._fan_scale_to = None
@@ -585,16 +1585,104 @@ class NitroWindow(Adw.ApplicationWindow):
             return False
         self._run(
             self.hw.set_fans,
-            max(1, int(self.cpu_scale.get_value())),
-            max(1, int(self.gpu_scale.get_value())),
+            max(1, min(100, int(self._custom_cpu))),
+            max(1, min(100, int(self._custom_gpu))),
             False,
         )
+        return False
+
+    def _sync_session_lighting(self) -> None:
+        hold = time.monotonic() < getattr(self, "_light_hold", 0)
+        if not hold and getattr(self, "_brightness_to", None) is None:
+            pct = screen_brightness()
+            if pct is not None:
+                if abs(self.brightness_scale.get_value() - pct) >= 2:
+                    self._busy = True
+                    self.brightness_scale.set_value(pct)
+                    self._busy = False
+                self._brightness_lab.set_text(t("light.brightness_pct", pct=pct))
+        if not hold:
+            enabled, temp = night_light()
+            if enabled is not None:
+                self._busy = True
+                self.night_switch.set_active(enabled)
+                self._busy = False
+                self.night_temp_scale.set_sensitive(enabled)
+            if (
+                temp is not None
+                and getattr(self, "_night_temp_to", None) is None
+                and abs(self.night_temp_scale.get_value() - temp) >= 40
+            ):
+                self._busy = True
+                self.night_temp_scale.set_value(temp)
+                self._busy = False
+        leds = lock_leds()
+        for key, chip in getattr(self, "_led_chips", {}).items():
+            if leds.get(key):
+                chip.add_css_class("on")
+            else:
+                chip.remove_css_class("on")
+
+    def _on_brightness(self, scale: Gtk.Scale) -> None:
+        if self._busy:
+            return
+        self._light_hold = time.monotonic() + 2.5
+        self._brightness_lab.set_text(t("light.brightness_pct", pct=int(scale.get_value())))
+        if self._brightness_to is not None:
+            GLib.source_remove(self._brightness_to)
+        self._brightness_to = GLib.timeout_add(80, self._flush_brightness)
+
+    def _flush_brightness(self) -> bool:
+        self._brightness_to = None
+        self._run(set_screen_brightness, int(self.brightness_scale.get_value()))
+        return False
+
+    def _on_night_light(self, _switch: Gtk.Switch, state: bool) -> bool:
+        if self._busy:
+            return False
+        self._light_hold = time.monotonic() + 2.5
+        self._run(set_night_light, state)
+        self.night_temp_scale.set_sensitive(state)
+        return False
+
+    def _on_night_temp(self, _scale: Gtk.Scale) -> None:
+        if self._busy:
+            return
+        self._light_hold = time.monotonic() + 2.5
+        if self._night_temp_to is not None:
+            GLib.source_remove(self._night_temp_to)
+        self._night_temp_to = GLib.timeout_add(180, self._flush_night_temp)
+
+    def _on_kb_deck_click(self, *_args) -> None:
+        if not self.timeout_switch.get_sensitive():
+            return
+        self.timeout_switch.set_active(not self.timeout_switch.get_active())
+
+    def _on_lock_led(self, _btn, key: str) -> None:
+        self._run(toggle_lock_led, key)
+        GLib.timeout_add(150, self._sync_leds_soon)
+
+    def _sync_leds_soon(self) -> bool:
+        leds = lock_leds()
+        for name, chip in getattr(self, "_led_chips", {}).items():
+            if leds.get(name):
+                chip.add_css_class("on")
+            else:
+                chip.remove_css_class("on")
+        return False
+
+    def _flush_night_temp(self) -> bool:
+        self._night_temp_to = None
+        self._run(set_night_temp, int(self.night_temp_scale.get_value()))
         return False
 
     def _on_flag(self, switch: Gtk.Switch, state: bool, name: str) -> bool:
         if self._busy:
             return False
         self._run(self.hw.set_flag, name, state)
+        if name == "backlight_timeout":
+            self.kb_deck.set_timeout(state)
+            self._light_hold = time.monotonic() + 2.5
         return False
 
     def _on_usb(self, drop: Gtk.DropDown, _pspec) -> None:
@@ -607,11 +1695,11 @@ class NitroWindow(Adw.ApplicationWindow):
     def _on_calibrate(self, _btn) -> None:
         dialog = Adw.MessageDialog(
             transient_for=self,
-            heading="Calibrate battery?",
-            body="Full cycle 100→0→100. Keep AC plugged in.",
+            heading=t("set.calibrate_title"),
+            body=t("set.calibrate_body"),
         )
-        dialog.add_response("cancel", "Cancel")
-        dialog.add_response("ok", "Start")
+        dialog.add_response("cancel", t("cancel"))
+        dialog.add_response("ok", t("start"))
         dialog.set_response_appearance("ok", Adw.ResponseAppearance.DESTRUCTIVE)
         dialog.connect("response", self._on_calibrate_resp)
         dialog.present()
@@ -626,103 +1714,351 @@ class NitroWindow(Adw.ApplicationWindow):
     def _on_setup_help(self, _btn) -> None:
         dialog = Adw.MessageDialog(
             transient_for=self,
-            heading="Install driver",
-            body=f"In a terminal:\n\n{SETUP}\n\nNeeds sudo.",
+            heading=t("set.install_title"),
+            body=t("set.install_body", setup=SETUP),
         )
-        dialog.add_response("ok", "OK")
+        dialog.add_response("ok", t("ok"))
         dialog.present()
 
-    def _fill_resource_labels(self, sensors: Sensors) -> None:
-        cores = len(sensors.cpu_cores)
-        freq = f"{sensors.cpu_freq_ghz:.2f} GHz" if sensors.cpu_freq_ghz else "—"
-        load = f"{sensors.cpu_load:.0f}%" if sensors.cpu_load is not None else "—"
-        temp = f"{sensors.cpu_temp:.0f} °C" if sensors.cpu_temp is not None else "—"
-        self._res_cpu.set_text(
-            f"{sensors.cpu_name or 'CPU'}  ·  {cores} threads  ·  {freq}  ·  {load}  ·  {temp}"
-        )
-        ram = (
-            f"RAM {sensors.ram_used_gb:.1f}/{sensors.ram_total_gb:.1f} GB ({sensors.ram_pct:.0f}%)"
-            if sensors.ram_used_gb is not None and sensors.ram_total_gb
-            else "RAM —"
-        )
-        if sensors.swap_total_gb:
-            swap = (
-                f"SWAP {sensors.swap_used_gb:.1f}/{sensors.swap_total_gb:.1f} GB "
-                f"({sensors.swap_pct:.0f}%)"
+    def _on_autostart(self, _switch: Gtk.Switch, state: bool) -> bool:
+        if self._busy:
+            return False
+        try:
+            _set_autostart(state)
+        except OSError as exc:
+            self._toast(str(exc))
+        return False
+
+    def _on_hotkey(self, _switch: Gtk.Switch, state: bool) -> bool:
+        if self._busy:
+            return False
+        _set_hotkey(state)
+        if state and not _hotkey_on():
+            self._toast("Could not start nitrosense-hotkey.service")
+        return False
+
+    def _on_cpu_logical(self, *_args) -> None:
+        for tile in self._core_tiles:
+            tile.clear()
+        child = self._core_host.get_first_child()
+        while child is not None:
+            nxt = child.get_next_sibling()
+            self._core_host.remove(child)
+            child = nxt
+        self._core_tiles.clear()
+
+    def _core_view(self, sensors: Sensors) -> list[tuple[float, float | None]]:
+        loads = sensors.cpu_cores
+        freqs = sensors.cpu_core_freq or [None] * len(loads)
+        ids = sensors.cpu_core_ids
+        if len(freqs) < len(loads):
+            freqs = list(freqs) + [None] * (len(loads) - len(freqs))
+        logical = True
+        if hasattr(self, "_cpu_logical"):
+            logical = self._cpu_logical.get_active()
+        if logical or not ids or len(ids) != len(loads):
+            return [(loads[i], freqs[i]) for i in range(len(loads))]
+        groups: dict[int, list[int]] = {}
+        for i, cid in enumerate(ids):
+            groups.setdefault(cid, []).append(i)
+        rows: list[tuple[float, float | None]] = []
+        for cid in sorted(groups):
+            idxs = groups[cid]
+            avg = sum(loads[i] for i in idxs) / len(idxs)
+            present = [freqs[i] for i in idxs if freqs[i] is not None]
+            rows.append((avg, max(present) if present else None))
+        return rows
+
+    def _sync_home_tiles(self, sensors: Sensors) -> None:
+        if sensors.ram_used_gb is not None and sensors.ram_total_gb:
+            self.home_ram.update(
+                sensors.ram_pct,
+                caption=f"{t('tile.ram')}  ·  {sensors.ram_used_gb:.1f}/{sensors.ram_total_gb:.0f} GB",
             )
         else:
-            swap = "SWAP off"
-        gpu = sensors.gpu_name or "GPU —"
-        if sensors.gpu_load is not None:
-            gpu += f"  {sensors.gpu_load:.0f}%"
-        if sensors.gpu_power_w is not None:
-            gpu += f"  {sensors.gpu_power_w:.0f} W"
-        self._res_mem.set_text(f"{ram}  ·  {swap}  ·  {gpu}")
-        if sensors.net_iface:
-            kind = (sensors.net_kind or "nic").upper()
-            ip = sensors.net_ipv4 or "no IPv4"
-            rx = "—" if sensors.net_rx_mbps is None else f"{sensors.net_rx_mbps:.1f}"
-            tx = "—" if sensors.net_tx_mbps is None else f"{sensors.net_tx_mbps:.1f}"
-            self._res_net.set_text(f"{kind} {sensors.net_iface}  {ip}  ↓{rx} ↑{tx} Mb/s")
+            self.home_ram.update(None)
+        if sensors.swap_total_gb:
+            self.home_swap.update(
+                sensors.swap_pct,
+                caption=f"{t('tile.swap')}  ·  {sensors.swap_used_gb:.1f}/{sensors.swap_total_gb:.0f} GB",
+            )
         else:
-            self._res_net.set_text("No default-route interface")
-        if sensors.disks:
-            bits = []
-            for disk in sensors.disks:
-                line = disk.name
-                if disk.mount:
-                    line += f" on {disk.mount}"
-                if disk.used_gb is not None and disk.total_gb is not None:
-                    line += f"  {disk.used_gb:.0f}/{disk.total_gb:.0f} GB"
-                if disk.read_mbps is not None:
-                    line += f"  R {disk.read_mbps:.1f} W {disk.write_mbps:.1f} MB/s"
-                bits.append(line)
-            self._res_disk.set_text("  ·  ".join(bits))
+            self.home_swap.update(0.0, caption=t("swap.off"), text=t("off"))
+        rx, tx = sensors.net_rx_mbps, sensors.net_tx_mbps
+        if rx is None or tx is None:
+            self.home_net.update(None, caption=sensors.net_iface or t("tile.net"))
         else:
-            self._res_disk.set_text("No disks")
-        bat = sensors.battery_status or "Battery"
-        if sensors.battery_pct is not None:
-            bat += f"  {sensors.battery_pct}%"
-        if sensors.battery_power_w:
-            bat += f"  {sensors.battery_power_w:.1f} W"
-        if sensors.on_ac:
-            bat += "  ·  AC"
-        self._res_bat.set_text(bat)
+            hint = sensors.net_ipv4 or sensors.net_iface or "NET"
+            self.home_net.update(
+                rx + tx,
+                caption=f"NET  ·  {hint}",
+                text=f"↓{rx:.1f}  ↑{tx:.1f}",
+            )
+        disk = sensors.disks[0] if sensors.disks else None
+        if disk is not None and disk.used_gb is not None and disk.total_gb is not None:
+            name = disk.name.upper() if disk.name else "DISK"
+            self.home_disk.update(
+                disk.pct,
+                caption=f"{name}  ·  {disk.used_gb:.0f}/{disk.total_gb:.0f} GB",
+            )
+        else:
+            self.home_disk.update(None)
+
+    def _sync_core_grid(self, sensors: Sensors) -> None:
+        rows = self._core_view(sensors)
+        n = len(rows)
+        while len(self._core_tiles) > n:
+            tile = self._core_tiles.pop()
+            parent = tile.get_parent()
+            if parent is not None:
+                self._core_host.remove(parent)
+        while len(self._core_tiles) < n:
+            tile = CoreTile(len(self._core_tiles))
+            self._core_tiles.append(tile)
+            self._core_host.append(tile)
+        for i, (load, freq) in enumerate(rows):
+            tile = self._core_tiles[i]
+            tile.index = i
+            tile.update(load, freq)
+
+    def _fill_resource_labels(self, sensors: Sensors, snap=None) -> None:
+        load = sensors.cpu_load
+        self._cpu_hero.set_text("—" if load is None else f"{load:.0f}%")
+        self._cpu_sub.set_text(sensors.cpu_name or "CPU")
+        self._cpu_facts["Model"].set_text(sensors.cpu_name or "—")
+        self._cpu_facts["Threads"].set_text(str(len(sensors.cpu_cores) or "—"))
+        self._cpu_facts["Frequency"].set_text(
+            f"{sensors.cpu_freq_ghz:.2f} GHz" if sensors.cpu_freq_ghz else "—"
+        )
+        self._cpu_facts["Temperature"].set_text(
+            f"{sensors.cpu_temp:.0f} °C" if sensors.cpu_temp is not None else "—"
+        )
+
+        if sensors.ram_used_gb is not None and sensors.ram_total_gb:
+            self._ram_hero.set_text(f"{sensors.ram_pct:.0f}%")
+            self._ram_sub.set_text(
+                f"{sensors.ram_used_gb:.1f} / {sensors.ram_total_gb:.1f} GB in use"
+            )
+            self._ram_facts["Used"].set_text(f"{sensors.ram_used_gb:.1f} GB")
+            self.mem_used_tile.update(
+                sensors.ram_pct,
+                caption=f"Memory  ·  {sensors.ram_used_gb:.1f}/{sensors.ram_total_gb:.0f} GB",
+            )
+        else:
+            self._ram_hero.set_text("—")
+            self._ram_sub.set_text("Memory")
+            self.mem_used_tile.update(None)
+        if sensors.ram_available_gb is not None:
+            self._ram_facts["Available"].set_text(f"{sensors.ram_available_gb:.1f} GB")
+        if sensors.ram_cached_gb is not None:
+            self._ram_facts["Cached"].set_text(f"{sensors.ram_cached_gb:.1f} GB")
+        if sensors.swap_total_gb:
+            self._ram_facts["Swap"].set_text(
+                f"{sensors.swap_used_gb:.1f} / {sensors.swap_total_gb:.0f} GB"
+            )
+            self.mem_swap_tile.update(
+                sensors.swap_pct,
+                caption=f"Swap  ·  {sensors.swap_used_gb:.1f}/{sensors.swap_total_gb:.0f} GB",
+            )
+        else:
+            self._ram_facts["Swap"].set_text("off")
+            self.mem_swap_tile.update(0.0, caption="Swap  ·  off", text="off")
+
+        rx = sensors.net_rx_mbps
+        tx = sensors.net_tx_mbps
+        if rx is None or tx is None:
+            self._net_hero.set_text("—")
+            self._net_sub.set_text(sensors.net_iface or "No default-route interface")
+            self.net_rx_tile.update(None)
+            self.net_tx_tile.update(None)
+        else:
+            self._net_hero.set_text(f"{rx + tx:.1f}")
+            self._net_sub.set_text("Mb/s  down + up")
+            self.net_rx_tile.update(rx, caption="Download")
+            self.net_tx_tile.update(tx, caption="Upload")
+        self._net_facts["Interface"].set_text(sensors.net_iface or "—")
+        self._net_facts["Type"].set_text((sensors.net_kind or "—").upper())
+        self._net_facts["IPv4"].set_text(sensors.net_ipv4 or "—")
+        self._net_facts["Link"].set_text(
+            f"{sensors.net_link_mbps:.0f} Mb/s" if sensors.net_link_mbps else "—"
+        )
+
+        self._sync_disks(sensors.disks)
+
+        pct = sensors.battery_pct
+        self._bat_hero.set_text("—" if pct is None else f"{pct}%")
+        plug = "AC adapter" if sensors.on_ac else "On battery"
+        self._bat_sub.set_text(f"{sensors.battery_status or 'Battery'}  ·  {plug}")
+        self.bat_charge_tile.update(None if pct is None else float(pct), caption="Charge")
+        self.bat_power_tile.update(
+            sensors.battery_power_w,
+            caption="Power draw" if not sensors.on_ac else "Power  ·  AC",
+        )
+        self._bat_facts["Status"].set_text(sensors.battery_status or "—")
+        self._bat_facts["Power"].set_text(
+            f"{sensors.battery_power_w:.1f} W" if sensors.battery_power_w else "—"
+        )
+        if sensors.battery_energy_wh is not None and sensors.battery_full_wh:
+            self._bat_facts["Energy"].set_text(
+                f"{sensors.battery_energy_wh:.1f} / {sensors.battery_full_wh:.1f} Wh"
+            )
+        elif sensors.battery_energy_wh is not None:
+            self._bat_facts["Energy"].set_text(f"{sensors.battery_energy_wh:.1f} Wh")
+        self._bat_facts["Cycles"].set_text(
+            "—" if sensors.battery_cycles is None else str(sensors.battery_cycles)
+        )
+
+    def _sync_disks(self, disks) -> None:
+        names = [d.name for d in disks]
+        if names != list(self._disk_widgets):
+            while True:
+                child = self._disk_host.get_first_child()
+                if child is None:
+                    break
+                self._disk_host.remove(child)
+            self._disk_widgets.clear()
+            for disk in disks:
+                title = Gtk.Label(label=disk.name.upper(), xalign=0)
+                title.add_css_class("ns-page-title")
+                sub = Gtk.Label(xalign=0, wrap=True)
+                sub.add_css_class("muted")
+                used = MetricTile("Used", "%", color=DISK)
+                read = MetricTile("Read", "MB/s", color=DISK, ceiling=None)
+                write = MetricTile("Write", "MB/s", color=DISK, ceiling=None)
+                wrap = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+                wrap.append(title)
+                wrap.append(sub)
+                wrap.append(self._flow_grid(used, read, write, cols=3))
+                self._disk_host.append(wrap)
+                self._disk_widgets[disk.name] = {
+                    "sub": sub,
+                    "used": used,
+                    "read": read,
+                    "write": write,
+                }
+        for disk in disks:
+            slot = self._disk_widgets.get(disk.name)
+            if slot is None:
+                continue
+            slot["sub"].set_text(disk.mount or "unmounted")
+            if disk.used_gb is not None and disk.total_gb is not None:
+                slot["used"].update(
+                    disk.pct,
+                    caption=f"Used  ·  {disk.used_gb:.0f}/{disk.total_gb:.0f} GB",
+                )
+            else:
+                slot["used"].update(None, caption="Used")
+            slot["read"].update(disk.read_mbps)
+            slot["write"].update(disk.write_mbps)
+
+    def _sync_gpus(self, gpus: list[GpuInfo], snap) -> None:
+        keys = [g.key for g in gpus]
+        if keys != list(self._gpu_widgets):
+            while True:
+                child = self._gpu_host.get_first_child()
+                if child is None:
+                    break
+                self._gpu_host.remove(child)
+            self._gpu_widgets.clear()
+            for gpu in gpus:
+                vendor = Gtk.Label(label=gpu.vendor.upper(), xalign=0)
+                vendor.add_css_class("ns-page-title")
+                sub = Gtk.Label(label=gpu.name, xalign=0, wrap=True)
+                sub.add_css_class("muted")
+                load = MetricTile("Usage", "%")
+                temp = MetricTile("Temperature", "°C", ceiling=110)
+                freq = MetricTile("Frequency", "MHz", ceiling=None, color=NET)
+                tiles: list[MetricTile] = [load, temp, freq]
+                power = None
+                if gpu.vendor == "NVIDIA" or gpu.power_w is not None:
+                    power = MetricTile("Power", "W", ceiling=None)
+                    tiles.append(power)
+                wrap = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+                wrap.append(vendor)
+                wrap.append(sub)
+                wrap.append(self._flow_grid(*tiles, cols=2))
+                self._gpu_host.append(wrap)
+                self._gpu_widgets[gpu.key] = {
+                    "sub": sub,
+                    "load": load,
+                    "temp": temp,
+                    "freq": freq,
+                    "power": power,
+                }
+        for gpu in gpus:
+            slot = self._gpu_widgets.get(gpu.key)
+            if slot is None:
+                continue
+            slot["sub"].set_text(gpu.name)
+            rpm = snap.fan_gpu_rpm if snap is not None and gpu.vendor == "NVIDIA" else None
+            cap = "Usage"
+            if rpm is not None:
+                cap = f"Usage  ·  {rpm} RPM"
+            slot["load"].update(gpu.load, caption=cap)
+            slot["temp"].update(gpu.temp)
+            slot["freq"].update(gpu.freq_mhz)
+            if slot["power"] is not None:
+                if gpu.power_w is not None and gpu.power_limit_w is not None:
+                    slot["power"].update(
+                        gpu.power_w,
+                        caption=f"Power  ·  limit {gpu.power_limit_w:.0f} W",
+                    )
+                else:
+                    slot["power"].update(gpu.power_w)
 
     def _on_proc_filter(self, _entry: Gtk.SearchEntry) -> None:
         self._refresh_proc_list()
 
     def _refresh_proc_list(self) -> None:
         query = (self._proc_search.get_text() or "").strip().lower()
-        while True:
-            row = self._proc_list.get_row_at_index(0)
-            if row is None:
-                break
-            self._proc_list.remove(row)
-        shown = 0
+        wanted: list[ProcInfo] = []
         for proc in self._proc_rows:
             if query and query not in proc.name.lower() and query not in str(proc.pid):
                 continue
-            box = Gtk.Box(spacing=12)
-            box.set_margin_start(8)
-            box.set_margin_end(8)
-            box.set_margin_top(4)
-            box.set_margin_bottom(4)
-            name = Gtk.Label(label=f"{proc.name}  ({proc.pid})", xalign=0, hexpand=True)
-            cpu = Gtk.Label(label=f"{proc.cpu_pct:.0f}%")
-            mem = Gtk.Label(label=f"{proc.mem_mb:.0f} MB")
-            cpu.set_width_chars(5)
-            mem.set_width_chars(8)
-            end = Gtk.Button(label="End")
-            end.connect("clicked", self._on_end_process, proc.pid)
-            box.append(name)
-            box.append(cpu)
-            box.append(mem)
-            box.append(end)
-            self._proc_list.append(box)
-            shown += 1
-            if shown >= 25:
+            wanted.append(proc)
+            if len(wanted) >= 28:
                 break
+        wanted_ids = {p.pid for p in wanted}
+        for pid in list(self._proc_widgets):
+            if pid not in wanted_ids:
+                row = self._proc_widgets.pop(pid)["row"]
+                self._proc_list.remove(row)
+        for proc in wanted:
+            slot = self._proc_widgets.get(proc.pid)
+            if slot is None:
+                box = Gtk.Box(spacing=12)
+                box.set_margin_start(8)
+                box.set_margin_end(8)
+                box.set_margin_top(5)
+                box.set_margin_bottom(5)
+                name = Gtk.Label(xalign=0, hexpand=True)
+                name.set_ellipsize(Pango.EllipsizeMode.END)
+                pid_l = Gtk.Label()
+                cpu = Gtk.Label()
+                mem = Gtk.Label()
+                pid_l.set_width_chars(7)
+                cpu.set_width_chars(6)
+                mem.set_width_chars(9)
+                end = Gtk.Button(label=t("proc.end"))
+                end.connect("clicked", self._on_end_process, proc.pid)
+                box.append(name)
+                box.append(pid_l)
+                box.append(cpu)
+                box.append(mem)
+                box.append(end)
+                self._proc_list.append(box)
+                slot = {
+                    "row": box.get_parent(),
+                    "name": name,
+                    "pid": pid_l,
+                    "cpu": cpu,
+                    "mem": mem,
+                }
+                self._proc_widgets[proc.pid] = slot
+            slot["name"].set_text(proc.name)
+            slot["pid"].set_text(str(proc.pid))
+            slot["cpu"].set_text(f"{proc.cpu_pct:.0f}%")
+            slot["mem"].set_text(f"{proc.mem_mb:.0f} MB")
 
     def _on_end_process(self, _btn, pid: int) -> None:
         try:

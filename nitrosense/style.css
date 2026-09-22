@@ -67,42 +67,51 @@ window.nitrosense headerbar,
   box-shadow: none;
 }
 
+.mode-tile,
+.fan-pill {
+  background-image: none;
+  background-color: #0c0c0c;
+  color: #ececec;
+  border: 1px solid #2c2c2c;
+  border-radius: 12px;
+  box-shadow: none;
+  outline: none;
+  padding: 12px 18px 10px;
+}
+
 .mode-tile {
-  background: #0e0e0e;
-  color: #f0f0f0;
-  border: 1px solid #2a2a2a;
-  border-radius: 4px;
-  min-width: 128px;
-  min-height: 92px;
-  padding: 8px 12px;
-}
-
-.mode-tile:hover {
-  border-color: #ff6a00;
-}
-
-.mode-tile.active {
-  background: #160c04;
-  border-color: #ff6a00;
-  box-shadow: 0 0 22px rgba(255, 106, 0, 0.28);
-  color: #ff6a00;
+  min-width: 148px;
+  min-height: 102px;
 }
 
 .fan-pill {
-  min-width: 96px;
-  min-height: 40px;
-  background: #101010;
-  color: #ddd;
-  border: 1px solid #2a2a2a;
-  border-radius: 2px;
-  font-weight: 700;
-  letter-spacing: 1px;
+  min-width: 148px;
+  min-height: 86px;
 }
 
-.fan-pill.active {
-  background: #ff6a00;
-  color: #111;
+.mode-tile:hover,
+.fan-pill:hover {
+  background-color: #14100c;
   border-color: #ff6a00;
+}
+
+.mode-tile.active,
+.fan-pill.active {
+  background-color: #160c04;
+  border-color: #ff6a00;
+  box-shadow: 0 0 0 1px #ff6a00, 0 0 26px rgba(255, 106, 0, 0.34);
+  color: #ff6a00;
+}
+
+.ns-tile-label {
+  font-weight: 700;
+  font-size: 11px;
+  letter-spacing: 2px;
+  color: #8e8e8e;
+}
+
+.ns-tile-label-on {
+  color: #ff6a00;
 }
 
 .warn-banner {
@@ -125,6 +134,11 @@ window.nitrosense headerbar,
   padding: 18px;
 }
 
+window.nitrosense linkbutton,
+window.nitrosense button.link {
+  color: #ff6a00;
+}
+
 scale highlight {
   background: #ff6a00;
 }
@@ -138,4 +152,130 @@ scale trough {
   color: #6e6e6e;
   font-size: 11px;
   letter-spacing: 0.6px;
+}
+
+.ns-side {
+  background: #080808;
+  border-right: 1px solid #1c1c1c;
+  padding: 8px 0;
+}
+
+.ns-side row {
+  min-height: 42px;
+  padding: 0 16px;
+  border-radius: 0;
+  box-shadow: none;
+  background: transparent;
+}
+
+.ns-side row:hover {
+  background: #121212;
+}
+
+.ns-side row:selected {
+  background: #160c04;
+  box-shadow: inset 3px 0 0 #ff6a00;
+}
+
+.ns-side row label {
+  color: #8a8a8a;
+  font-weight: 700;
+  letter-spacing: 1.4px;
+  font-size: 11px;
+}
+
+.ns-side row:selected label {
+  color: #ff6a00;
+}
+
+.ns-page-title {
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 3px;
+  color: #ff6a00;
+}
+
+.ns-hero {
+  font-size: 40px;
+  font-weight: 800;
+  color: #ffffff;
+  letter-spacing: 1px;
+}
+
+.ns-fact-k {
+  color: #6e6e6e;
+  font-size: 11px;
+  letter-spacing: 1px;
+}
+
+.ns-fact-v {
+  color: #e6e6e6;
+  font-size: 13px;
+}
+
+.ns-proc-head {
+  color: #6a6a6a;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 1.2px;
+}
+
+.ns-rule-app {
+  font-weight: 700;
+  color: #e8e8e8;
+}
+
+.ns-live {
+  color: #ff6a00;
+  font-weight: 700;
+  letter-spacing: 1px;
+  font-size: 11px;
+}
+
+.ns-res-split {
+  background: #050505;
+}
+
+.ns-option-row {
+  background: #101010;
+  border: 1px solid #242424;
+  border-radius: 10px;
+  padding: 12px 16px;
+}
+
+.ns-core-card {
+  background: #101010;
+  border: 1px solid #242424;
+  border-radius: 10px;
+  padding: 10px 12px 8px 12px;
+}
+
+.ns-core-pct {
+  font-weight: 800;
+  font-size: 15px;
+  color: #f2f2f2;
+}
+
+flowbox.ns-core-grid {
+  background: transparent;
+}
+
+.ns-led,
+button.ns-led {
+  padding: 6px 12px;
+  min-height: 28px;
+  border: 1px solid #2a2a2a;
+  border-radius: 4px;
+  letter-spacing: 1.6px;
+  font-size: 11px;
+  font-weight: 800;
+  color: #6a6a6a;
+  background: #101010;
+}
+
+.ns-led.on,
+button.ns-led.on {
+  color: #111;
+  background: #ff6a00;
+  border-color: #ff6a00;
 }
