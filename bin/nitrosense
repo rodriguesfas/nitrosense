@@ -6,7 +6,7 @@ if [[ -d "$HERE/../nitrosense" ]]; then
 elif [[ -d /usr/share/nitrosense/nitrosense ]]; then
   ROOT=/usr/share/nitrosense
 else
-  echo "nitrosense: ficheiros da app não encontrados" >&2
+  echo "nitrosense: application files not found" >&2
   exit 1
 fi
 export PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}"

@@ -1,25 +1,32 @@
-# Auditoria vs NitroSense Windows (ANV15-51)
+# Audit vs Windows NitroSense (ANV15-51)
 
-Referência: manual Nitro V 15 (Home, Scenario, Fan Auto/Max/Custom, Monitoring 30–60 min, tecla dedicada).
+Reference: Nitro V 15 manual (Home, Scenario, Fan Auto/Max/Custom, Monitoring 30–60 min, dedicated key) plus GNOME Resources 1.10.2 (`net.nokyan.Resources`).
 
-| Função Windows | Aqui | Estado |
+| Windows / Resources feature | Here | Status |
 |---|---|---|
-| Tecla N abre a app | `KEY_PROG1` (148) → XF86Launch1 + listener sem grab | **ligado** |
-| Instância única / foca se já aberta | Gtk `org.alfred.nitrosense` | **sim** |
-| Temps CPU/GPU | coretemp + nvidia-smi | **sim** |
-| Load CPU/GPU (anel) | `/proc/stat` + nvidia-smi | **sim** |
-| RPM fans | sysfs hwmon acer | **sim (Linuwu)** |
-| Quiet / Default / Performance | platform_profile | **sim; firmware recusa Turbo** |
-| Fan Auto / Max / Custom | `fan_speed` (`0,0` / `100,100` / `cpu,gpu`) | **sim** |
-| Limite carga 80%, calibração, USB charging | sysfs nitro_sense | **sim** |
-| Backlight timeout | sysfs | **sim; teclado 1 cor neste chassis** |
-| RAM | MemTotal − MemAvailable | **HOME rodapé + MONITORING** |
-| RGB 4 zonas | four_zoned_kb | **N/A neste ANV15-51** |
-| Monitoring 30 min | sparklines 1800 pts | **sim (sem 3D)** |
-| Avatar 3D Acer | silhueta cairo | **aproximação** |
-| Scenario profiles ligados a apps | — | **não** |
-| App Center / Planet9 | — | **não** |
-| CoolBoost / Optimus toggle | — | **não (nem todos os Nitro V têm)** |
-| Driver WMI (fans/modos de verdade) | Linuwu Sense | **módulo `linuwu_sense`** |
+| N key opens the app | `KEY_PROG1` (148) → XF86Launch1 + grab-free listener | **on** |
+| Single instance / focus if already open | Gtk `org.alfred.nitrosense` | **yes** |
+| CPU/GPU temps | coretemp + nvidia-smi | **yes** |
+| CPU/GPU load (ring) | `/proc/stat` + nvidia-smi | **yes** |
+| Per-core CPU | `/proc/stat` cpuN | **RESOURCES** |
+| Fan RPM | acer hwmon sysfs | **yes (Linuwu)** |
+| Quiet / Default / Performance | platform_profile | **yes; firmware rejects Turbo** |
+| Fan Auto / Max / Custom | `fan_speed` (`0,0` / `100,100` / `cpu,gpu`) | **yes** |
+| 80% charge limit, calibration, USB charging | nitro_sense sysfs | **yes** |
+| Backlight timeout | sysfs | **yes; single-color keyboard on this chassis** |
+| RAM | MemTotal − MemAvailable | **HOME footer + MONITORING** |
+| SWAP | SwapTotal − SwapFree | **HOME footer + MONITORING** |
+| Network | `/proc/net/dev` on the default route + IPv4 | **HOME footer + MONITORING + RESOURCES** |
+| Disks | `/proc/diskstats` + `statvfs` | **HOME footer + MONITORING + RESOURCES** |
+| Processes + End | `/proc/[pid]` + SIGTERM | **RESOURCES** |
+| Battery | power_supply sysfs | **header + RESOURCES + SETTINGS** |
+| 4-zone RGB | four_zoned_kb | **N/A on this ANV15-51** |
+| 30 min monitoring | 1800-point sparklines | **yes (no 3D)** |
+| Acer 3D avatar | cairo silhouette | **approximation** |
+| Scenario profiles bound to apps | — | **no** |
+| App Center / Planet9 | — | **no** |
+| CoolBoost / Optimus toggle | — | **no (not every Nitro V has them)** |
+| NPU | — | **hidden unless the kernel exposes one** |
+| WMI driver (real fans/modes) | Linuwu Sense | **`linuwu_sense` module** |
 
-Aparência: HUD preto + laranja, anéis, Quiet/Default/Performance, Auto/Max/Custom — alinhado ao Windows. Sem assets 3D da Acer.
+Look: black + orange HUD, rings, Quiet/Default/Performance, Auto/Max/Custom — aligned with Windows. No Acer 3D assets.

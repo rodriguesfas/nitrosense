@@ -1,67 +1,81 @@
 # NitroSense Linux
 
-Clone **não oficial** do NitroSense para Acer Nitro no Linux. Testado no **ANV15-51**.
-Não é da Acer. A GUI é GTK4; o firmware é o mesmo. Fans, modos e bateria passam pelo driver [Linuwu Sense](https://github.com/PXDiv/Div-Linuwu-Sense) (o mesmo motor que o DAMX já cobriu neste modelo).
+**Unofficial** NitroSense clone for Acer Nitro on Linux. Tested on **ANV15-51**.
+Not affiliated with Acer. GTK4 HUD; same firmware. Fans, power profiles and battery
+go through [Linuwu Sense](https://github.com/PXDiv/Div-Linuwu-Sense) (the same engine
+DAMX already covers on this model).
 
-## Instalar (.deb)
+System monitoring matches the GNOME **Resources** app you already run
+(`net.nokyan.Resources`): CPU cores, memory, swap, GPU, default-route NIC, disks,
+battery, and a process list with End.
 
-Cada merge em `main` gera uma [Release](https://github.com/rodriguesfas/nitrosense/releases) com tag `vX.Y.Z` e o pacote `nitrosense_X.Y.Z_all.deb`.
+## Install (.deb)
+
+Each merge into `main` publishes a [Release](https://github.com/rodriguesfas/nitrosense/releases)
+with tag `vX.Y.Z` and `nitrosense_X.Y.Z_all.deb`.
 
 ```bash
 sudo apt install ./nitrosense_*_all.deb
 nitrosense                 # GUI
-nitrosense-setup           # driver Linuwu (fans, perfil, bateria) — pede sudo
+nitrosense-setup           # Linuwu driver (fans, profile, battery) — asks for sudo
 ```
 
-O `.deb` traz a app. O módulo de kernel **não** vai no pacote (depende do teu kernel). Depois do driver, faz logout/login (grupo `linuwu_sense`).
+The `.deb` ships the app. The kernel module is **not** in the package (it depends on
+your kernel). After the driver, log out and back in (`linuwu_sense` group).
 
-## Correr a partir da fonte
+## Run from source
 
 ```bash
 git clone https://github.com/rodriguesfas/nitrosense.git
 cd nitrosense
 ./bin/nitrosense
-./install-hotkey.sh        # tecla N (KEY_PROG1 → XF86Launch1)
-./setup.sh                 # driver Linuwu
+./install-hotkey.sh        # N key (KEY_PROG1 → XF86Launch1)
+./setup.sh                 # Linuwu driver
 ```
 
-Dependências da GUI: `python3-gi`, `gir1.2-gtk-4.0`, `gir1.2-adw-1`.
+GUI dependencies: `python3-gi`, `gir1.2-gtk-4.0`, `gir1.2-adw-1`.
 
-## O que replica do Windows
+## What it covers
 
-| NitroSense | Aqui |
+| NitroSense / Resources | Here |
 |---|---|
-| Temps CPU / GPU | Painel (coretemp + nvidia-smi) |
-| RAM usada / total | HOME (rodapé) + MONITORING |
-| RPM das ventoinhas | Painel, depois do driver |
-| Silencioso / Padrão / Desempenho | Perfis ACPI. Turbo **não existe** neste chassis (o firmware recusa) |
-| Auto / Max / Custom | HOME — Custom escreve `cpu%,gpu%` no sysfs Linuwu |
-| Limite de carga 80% | Aba Bateria |
-| Calibração de bateria | Aba Bateria |
-| USB charging com o PC desligado | Aba Bateria |
-| Timeout do backlight | Aba Teclado |
-| RGB 4 zonas | Só se o sysfs `four_zoned_kb` aparecer. O ANV15-51 é backlight de **uma cor** |
-| Tecla N | `KEY_PROG1` (Acer WMI) → XF86Launch1 + listener sem grab |
+| CPU / GPU temps and load | HOME rings |
+| Per-core CPU | RESOURCES |
+| RAM used / total | HOME footer + MONITORING |
+| SWAP used / total | HOME footer + MONITORING |
+| Default-route NIC (↓/↑ Mb/s, IPv4) | HOME footer + RESOURCES |
+| Disk usage and I/O | HOME footer + MONITORING + RESOURCES |
+| Processes (filter, End / SIGTERM) | RESOURCES |
+| Battery %, power, AC | header chip + RESOURCES + SETTINGS |
+| Fan RPM | HOME, after the driver |
+| Quiet / Default / Performance | ACPI profiles. Turbo **does not exist** on this chassis (firmware rejects it) |
+| Auto / Max / Custom fans | HOME — Custom writes `cpu%,gpu%` to Linuwu sysfs |
+| 80% charge limit, calibration, USB charging | SETTINGS |
+| Backlight timeout | LIGHTING |
+| 4-zone RGB | Only if `four_zoned_kb` appears in sysfs. ANV15-51 is a **single-color** backlight |
+| N key | `KEY_PROG1` (Acer WMI) → XF86Launch1 + grab-free listener |
 
-TGP da GPU (60 W vs 75 W) é outro problema (nvidia-powerd / Dynamic Boost), não desta app.
+GPU TGP (60 W vs 75 W) is a different problem (nvidia-powerd / Dynamic Boost), not this app.
+
+NPU pages from Resources stay hidden unless the kernel exposes an NPU (this i5-13420H does not).
 
 ## Branches
 
-| Branch | Uso |
+| Branch | Use |
 |---|---|
-| `dev` | Trabalho do dia a dia |
-| `main` | Estável. Push/merge aqui gera a tag `v$(cat VERSION)` e o `.deb` |
+| `dev` | Day-to-day work |
+| `main` | Stable. Push/merge here creates tag `v$(cat VERSION)` and the `.deb` |
 
-Antes de mergear `dev` → `main`, sobe o ficheiro `VERSION` (sem isso o workflow recusa, porque a tag já existe).
+Bump `VERSION` before merging `dev` → `main`. The workflow refuses to reuse an existing tag.
 
-## Árvore
+## Tree
 
 ```
-nitrosense/     GUI + hardware + sensores
-bin/            launcher, hotkey, helper pkexec, fixperms
+nitrosense/     GUI + hardware + sensors
+bin/            launcher, hotkey, pkexec helper, fixperms
 packaging/      build-deb.sh
-.github/        release do .deb em main
-setup.sh        driver Linuwu
+.github/        .deb release on main
+setup.sh        Linuwu driver
 ```
 
-Auditoria vs Windows: [AUDIT.md](AUDIT.md).
+Windows parity notes: [AUDIT.md](AUDIT.md).

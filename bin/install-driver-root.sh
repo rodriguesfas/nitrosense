@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Instala linuwu_sense (root). Chamado via pkexec.
+# Install linuwu_sense (root). Called via pkexec.
 set -euo pipefail
 
 if [[ $(id -u) -ne 0 ]]; then
-  echo "precisa de root (pkexec)" >&2
+  echo "needs root (pkexec)" >&2
   exit 1
 fi
 
@@ -21,7 +21,7 @@ fi
 USER_NAME="${USER_NAME:-root}"
 
 if [[ ! -f "$KO" ]]; then
-  echo "módulo não compilado: $KO" >&2
+  echo "module not built: $KO" >&2
   exit 1
 fi
 
@@ -70,6 +70,6 @@ fi
 systemd-tmpfiles --create "$CONF" || true
 "$ROOT/bin/nitrosense-fixperms" || true
 
-echo "linuwu_sense instalado para $USER_NAME"
+echo "linuwu_sense installed for $USER_NAME"
 ls "$SYSFS" 2>/dev/null || true
-cat /sys/firmware/acpi/platform_profile_choices 2>/dev/null || echo "sem platform_profile ainda"
+cat /sys/firmware/acpi/platform_profile_choices 2>/dev/null || echo "no platform_profile yet"

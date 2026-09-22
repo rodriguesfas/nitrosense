@@ -1,4 +1,4 @@
-"""Camada de hardware: Linuwu Sense (sysfs) com fallback acer_wmi / PWM."""
+"""Hardware layer: Linuwu Sense sysfs with acer_wmi / PWM fallback."""
 
 from __future__ import annotations
 
@@ -14,13 +14,13 @@ PROFILE_CHOICES = Path("/sys/firmware/acpi/platform_profile_choices")
 SENSE_NAMES = ("nitro_sense", "predator_sense")
 KB_DIR_NAME = "four_zoned_kb"
 
-# Nomes NitroSense → valores do firmware neste ANV15-51.
-# O firmware rejeita "performance" (turbo); no Windows o modo Performance
-# corresponde a balanced-performance.
+# NitroSense names → firmware values on this ANV15-51.
+# Firmware rejects "performance" (turbo); Windows Performance maps to
+# balanced-performance.
 NITRO_MODES = (
-    ("quiet", "Silencioso", "quiet"),
-    ("balanced", "Padrão", "balanced"),
-    ("performance", "Desempenho", "balanced-performance"),
+    ("quiet", "Quiet", "quiet"),
+    ("balanced", "Default", "balanced"),
+    ("performance", "Performance", "balanced-performance"),
 )
 
 HELPER_CANDIDATES = (
@@ -205,7 +205,7 @@ class Hardware:
     def set_fans(self, cpu_pct: int, gpu_pct: int, auto: bool) -> None:
         if auto:
             if self.caps.fan_speed and self.sense is not None:
-                # Linuwu exige o par CPU,GPU. "0" sozinho dá EINVAL.
+                # Linuwu requires the CPU,GPU pair. A lone "0" returns EINVAL.
                 self.write(self.sense / "fan_speed", "0,0")
             elif self.hwmon is not None:
                 self.write(self.hwmon / "pwm1_enable", "2")
@@ -226,17 +226,17 @@ class Hardware:
 
     def set_flag(self, name: str, enabled: bool) -> None:
         if self.sense is None:
-            raise RuntimeError("sysfs nitro_sense ausente — instala o driver")
+            raise RuntimeError("nitro_sense sysfs missing — install the driver")
         path = self.sense / name
         if not path.is_file():
-            raise RuntimeError(f"este chassis não expõe {name}")
+            raise RuntimeError(f"this chassis does not expose {name}")
         self.write(path, "1" if enabled else "0")
 
     def set_usb_charging(self, value: int) -> None:
         if self.sense is None:
-            raise RuntimeError("sysfs nitro_sense ausente — instala o driver")
+            raise RuntimeError("nitro_sense sysfs missing — install the driver")
         if value not in {0, 10, 20, 30}:
-            raise ValueError("USB charging: 0, 10, 20 ou 30")
+            raise ValueError("USB charging: 0, 10, 20 or 30")
         self.write(self.sense / "usb_charging", str(value))
 
     def set_rgb_mode(
@@ -250,7 +250,7 @@ class Hardware:
         blue: int,
     ) -> None:
         if self.kb is None:
-            raise RuntimeError("teclado RGB 4 zonas não disponível neste chassis")
+            raise RuntimeError("4-zone RGB keyboard is not available on this chassis")
         payload = f"{mode},{speed},{brightness},{direction},{red},{green},{blue}"
         self.write(self.kb / "four_zone_mode", payload)
 
@@ -268,7 +268,7 @@ class Hardware:
         pkexec = shutil.which("pkexec")
         if helper is None or pkexec is None:
             raise PermissionError(
-                f"sem permissão para escrever {path} — corre setup.sh"
+                f"no permission to write {path} — run setup.sh"
             )
         result = subprocess.run(
             [pkexec, str(helper), "write", str(path), value],
@@ -278,7 +278,7 @@ class Hardware:
         )
         if result.returncode != 0:
             err = (result.stderr or result.stdout or "").strip()
-            raise RuntimeError(err or f"helper falhou ({result.returncode})")
+            raise RuntimeError(err or f"helper failed ({result.returncode})")
 
 
 def _parse_fan_speed(raw: str) -> tuple[bool, int | None, int | None]:

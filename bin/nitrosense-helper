@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Escreve sysfs permitido via pkexec. Não aceita caminhos fora da allowlist."""
+"""Write allowed sysfs nodes via pkexec. Paths outside the allow-list are rejected."""
 
 from __future__ import annotations
 
@@ -42,7 +42,7 @@ def _allowed(path: Path) -> bool:
             return True
         except ValueError:
             continue
-    # PWM do hwmon acer
+    # acer hwmon PWM
     if resolved.name in {"pwm1", "pwm2", "pwm1_enable", "pwm2_enable"}:
         try:
             name = (resolved.parent / "name").read_text(encoding="utf-8").strip()
@@ -54,15 +54,15 @@ def _allowed(path: Path) -> bool:
 
 def main(argv: list[str]) -> int:
     if len(argv) != 4 or argv[1] != "write":
-        print("uso: nitrosense-helper write <path> <valor>", file=sys.stderr)
+        print("usage: nitrosense-helper write <path> <value>", file=sys.stderr)
         return 2
     path = Path(argv[2])
     value = argv[3]
     if "\n" in value or len(value) > MAX_VALUE:
-        print("valor inválido", file=sys.stderr)
+        print("invalid value", file=sys.stderr)
         return 2
     if not _allowed(path):
-        print(f"caminho recusado: {path}", file=sys.stderr)
+        print(f"path rejected: {path}", file=sys.stderr)
         return 3
     try:
         path.write_text(value + "\n", encoding="utf-8")

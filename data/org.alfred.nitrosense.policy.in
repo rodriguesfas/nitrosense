@@ -4,8 +4,8 @@
  "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
 <policyconfig>
   <action id="org.alfred.nitrosense.write">
-    <description>NitroSense Linux: escrever controlos do portátil</description>
-    <message>NitroSense Linux precisa de alterar o firmware Acer (fans, perfil, bateria).</message>
+    <description>NitroSense Linux: write laptop controls</description>
+    <message>NitroSense Linux needs to change Acer firmware (fans, profile, battery).</message>
     <defaults>
       <allow_any>no</allow_any>
       <allow_inactive>no</allow_inactive>

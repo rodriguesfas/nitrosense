@@ -1,4 +1,4 @@
-"""Widgets cairo no estilo NitroSense Windows."""
+"""Cairo widgets in the NitroSense Windows HUD style."""
 
 from __future__ import annotations
 
@@ -14,6 +14,9 @@ ORANGE_HOT = (1.0, 0.22, 0.12)
 TRACK = (0.18, 0.18, 0.18)
 WHITE = (0.96, 0.96, 0.96)
 MUTED = (0.62, 0.62, 0.62)
+NET = (0.35, 0.72, 1.0)
+SWAP = (0.95, 0.55, 0.18)
+DISK = (0.72, 0.52, 1.0)
 
 
 def _rgb(cr, color, alpha: float = 1.0) -> None:
@@ -32,7 +35,7 @@ def _center_text(cr, text: str, x: float, y: float) -> None:
 
 
 class RingGauge(Gtk.DrawingArea):
-    """Anel de load % com temperatura no centro — o medidor clássico do NitroSense."""
+    """Load ring with temperature in the centre — the classic NitroSense gauge."""
 
     def __init__(self, title: str) -> None:
         super().__init__()
@@ -106,7 +109,7 @@ class RingGauge(Gtk.DrawingArea):
 
 
 class LaptopHero(Gtk.DrawingArea):
-    """Silhueta do portátil com glow laranja do modo activo (substitui o avatar 3D)."""
+    """Laptop silhouette with orange glow for the active mode (stands in for the 3D avatar)."""
 
     def __init__(self) -> None:
         super().__init__()
@@ -138,7 +141,7 @@ class LaptopHero(Gtk.DrawingArea):
         cr.rectangle(0, 0, width, height)
         cr.fill()
 
-        # grelha HUD
+        # HUD grid
         cr.set_line_width(1)
         _rgb(cr, ORANGE, 0.04)
         step = 28
@@ -211,22 +214,22 @@ class LaptopHero(Gtk.DrawingArea):
             cr.restore()
 
 
-class RamBar(Gtk.DrawingArea):
-    """Barra de RAM no estilo HUD — usada / total + %."""
+class HudBar(Gtk.DrawingArea):
+    """Compact HUD bar — RAM / SWAP / NET / DISK in the footer."""
 
-    def __init__(self) -> None:
+    def __init__(self, title: str, accent=ORANGE, width: int = 400) -> None:
         super().__init__()
-        self.used: float | None = None
-        self.total: float | None = None
+        self.title = title
+        self.accent = accent
+        self.right = "—"
         self.pct: float | None = None
-        self.set_content_width(520)
+        self.set_content_width(width)
         self.set_content_height(36)
         self.set_hexpand(False)
         self.set_draw_func(self._draw)
 
-    def update(self, used: float | None, total: float | None, pct: float | None) -> None:
-        self.used = used
-        self.total = total
+    def update(self, right: str, pct: float | None) -> None:
+        self.right = right
         self.pct = pct
         self.queue_draw()
 
@@ -234,39 +237,77 @@ class RamBar(Gtk.DrawingArea):
         cr.set_source_rgb(0.07, 0.07, 0.08)
         _round_rect(cr, 0, 0, width, height, 4)
         cr.fill()
-        _rgb(cr, ORANGE, 0.35)
+        _rgb(cr, self.accent, 0.35)
         cr.set_line_width(1)
         _round_rect(cr, 0.5, 0.5, width - 1, height - 1, 4)
         cr.stroke()
 
         _font(cr, 11, bold=True)
-        _rgb(cr, ORANGE)
-        cr.move_to(12, height / 2 + 4)
-        cr.show_text("RAM")
+        _rgb(cr, self.accent)
+        cr.move_to(10, height / 2 + 4)
+        cr.show_text(self.title)
+        title_w = cr.text_extents(self.title).width
 
-        bar_x, bar_w, bar_h = 56, width - 200, 8
+        label = self.right or "—"
+        _font(cr, 11, bold=True)
+        _rgb(cr, WHITE)
+        label_w = cr.text_extents(label).width
+        cr.move_to(width - label_w - 10, height / 2 + 4)
+        cr.show_text(label)
+
+        bar_x = 10 + title_w + 8
+        bar_right = width - label_w - 18
+        bar_w = max(24, bar_right - bar_x)
+        bar_h = 8
         bar_y = height / 2 - bar_h / 2
         _rgb(cr, TRACK)
         _round_rect(cr, bar_x, bar_y, bar_w, bar_h, 3)
         cr.fill()
         fill = 0.0 if self.pct is None else max(0.0, min(1.0, self.pct / 100.0))
         hot = fill >= 0.9
-        _rgb(cr, ORANGE_HOT if hot else ORANGE)
+        _rgb(cr, ORANGE_HOT if hot else self.accent)
         if fill > 0:
             _round_rect(cr, bar_x, bar_y, max(bar_w * fill, 3), bar_h, 3)
             cr.fill()
 
-        if self.used is not None and self.total is not None:
-            label = f"{self.used:.1f} / {self.total:.1f} GB"
-            if self.pct is not None:
-                label += f"   {self.pct:.0f}%"
-        else:
-            label = "—"
-        _font(cr, 12, bold=True)
-        _rgb(cr, WHITE)
-        ext = cr.text_extents(label)
-        cr.move_to(width - ext.width - 14, height / 2 + 4)
-        cr.show_text(label)
+
+class CoreStrip(Gtk.DrawingArea):
+    """Per-core CPU bars, same idea as GNOME Resources."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.cores: list[float] = []
+        self.set_content_height(64)
+        self.set_hexpand(True)
+        self.set_draw_func(self._draw)
+
+    def update(self, cores: list[float]) -> None:
+        self.cores = list(cores)
+        self.queue_draw()
+
+    def _draw(self, _area, cr, width: int, height: int) -> None:
+        cr.set_source_rgb(0.07, 0.07, 0.08)
+        _round_rect(cr, 0, 0, width, height, 4)
+        cr.fill()
+        _font(cr, 11, bold=True)
+        _rgb(cr, ORANGE)
+        cr.move_to(10, 16)
+        cr.show_text("CPU CORES")
+        n = len(self.cores) or 1
+        gap = 3
+        x0, y0, bar_h = 10, 24, height - 32
+        bar_w = max(4, (width - 20 - gap * (n - 1)) / n)
+        for i, load in enumerate(self.cores):
+            x = x0 + i * (bar_w + gap)
+            _rgb(cr, TRACK)
+            _round_rect(cr, x, y0, bar_w, bar_h, 2)
+            cr.fill()
+            fill = max(0.0, min(1.0, load / 100.0))
+            if fill > 0:
+                h = max(2, bar_h * fill)
+                _rgb(cr, ORANGE_HOT if fill >= 0.9 else ORANGE)
+                _round_rect(cr, x, y0 + bar_h - h, bar_w, h, 2)
+                cr.fill()
 
 
 class Sparkline(Gtk.DrawingArea):
@@ -300,8 +341,8 @@ class Sparkline(Gtk.DrawingArea):
         last = self.points[-1]
         _rgb(cr, WHITE)
         _font(cr, 16, bold=True)
-        cr.move_to(width - 110, 20)
-        if self.unit == "GB":
+        cr.move_to(width - 118, 20)
+        if self.unit in {"GB", "Mbps", "MB/s"}:
             cr.show_text(f"{last:.1f} {self.unit}")
         else:
             cr.show_text(f"{last:.0f} {self.unit}")
