@@ -84,6 +84,7 @@ GUI dependencies: `python3-gi`, `gir1.2-gtk-4.0`, `gir1.2-adw-1`.
 | Backlight timeout, display brightness, Night Light | LIGHTING |
 | 4-zone RGB | Only if `four_zoned_kb` appears in sysfs. ANV15-51 is a **single-color** backlight |
 | N key | `KEY_PROG1` (Acer WMI) → XF86Launch1 + grab-free listener |
+| Top-bar icon | Ubuntu AppIndicators while the app is running. Close hides to the tray; click the N to reopen |
 
 NPU pages from Resources stay hidden unless the kernel exposes an NPU (this i5-13420H does not).
 

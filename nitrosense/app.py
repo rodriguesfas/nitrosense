@@ -22,6 +22,7 @@ from gi.repository import Adw, Gdk, GLib, Gtk, Pango
 from nitrosense.gpu import restore_saved_tgp, set_tgp
 from nitrosense.hardware import NITRO_MODES, Hardware
 from nitrosense.i18n import LANG_LABELS, LANGS, lang as ui_lang, save_lang, set_lang, t
+from nitrosense.tray import TrayIcon
 from nitrosense.lighting import (
     NIGHT_TEMP_MAX,
     NIGHT_TEMP_MIN,
@@ -2152,6 +2153,7 @@ class NitroSenseApplication(Adw.Application):
     def __init__(self) -> None:
         super().__init__(application_id="org.alfred.nitrosense")
         self.window: NitroWindow | None = None
+        self._tray: TrayIcon | None = None
 
     def do_startup(self) -> None:
         Adw.Application.do_startup(self)
@@ -2164,11 +2166,53 @@ class NitroSenseApplication(Adw.Application):
                 provider,
                 Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION,
             )
+        self.hold()
+        self._tray = TrayIcon(
+            on_show=self._show_from_tray,
+            on_quit=self._quit_from_tray,
+            on_mode=self._mode_from_tray,
+            labels={
+                "tray.show": t("tray.show"),
+                "tray.quit": t("tray.quit"),
+                "tray.tooltip": t("tray.tooltip"),
+                "mode.quiet": t("mode.quiet"),
+                "mode.default": t("mode.default"),
+                "mode.performance": t("mode.performance"),
+            },
+        )
 
     def do_activate(self) -> None:
+        self._ensure_window()
+        assert self.window is not None
+        self.window.present()
+
+    def do_shutdown(self) -> None:
+        if self._tray is not None:
+            self._tray.close()
+            self._tray = None
+        Adw.Application.do_shutdown(self)
+
+    def _ensure_window(self) -> None:
         if self.window is None:
             self.window = NitroWindow(self)
-        self.window.present()
+            self.window.connect("close-request", self._hide_to_tray)
+
+    def _hide_to_tray(self, *_args) -> bool:
+        if self.window is not None:
+            self.window.set_visible(False)
+        return True
+
+    def _show_from_tray(self) -> None:
+        self.activate()
+
+    def _quit_from_tray(self) -> None:
+        self.release()
+        self.quit()
+
+    def _mode_from_tray(self, key: str) -> None:
+        self._ensure_window()
+        assert self.window is not None
+        self.window._on_mode(None, key)
 
 
 def main(argv: list[str] | None = None) -> int:

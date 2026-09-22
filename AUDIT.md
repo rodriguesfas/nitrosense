@@ -30,5 +30,6 @@ Reference: Nitro V 15 manual (Home, Scenario, Fan Auto/Max/Custom, Monitoring 30
 | CoolBoost / Optimus toggle | — | **no (not every Nitro V has them)** |
 | NPU | — | **hidden unless the kernel exposes one** |
 | WMI driver (real fans/modes) | Linuwu Sense | **`linuwu_sense` module** |
+| Top-bar / tray icon | StatusNotifierItem (Ubuntu AppIndicators) | **yes** |
 
 Look: black + orange HUD, rings, Quiet/Default/Performance, Auto/Max/Custom — aligned with Windows. No Acer 3D assets.

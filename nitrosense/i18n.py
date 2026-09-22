@@ -155,6 +155,9 @@ _STRINGS: dict[str, dict[str, str]] = {
         "start": "Start",
         "swap.off": "SWAP  ·  off",
         "off": "off",
+        "tray.show": "Show window",
+        "tray.quit": "Quit",
+        "tray.tooltip": "NitroSense",
     },
     "pt_BR": {
         "tab.home": "INÍCIO",
@@ -300,6 +303,9 @@ _STRINGS: dict[str, dict[str, str]] = {
         "start": "Iniciar",
         "swap.off": "SWAP  ·  desligado",
         "off": "off",
+        "tray.show": "Mostrar janela",
+        "tray.quit": "Sair",
+        "tray.tooltip": "NitroSense",
     },
 }
 
