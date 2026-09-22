@@ -48,8 +48,12 @@ echo "The GUI already opens without a driver (CPU/GPU). Fans, modes and battery 
 echo "This replaces acer_wmi, asks for sudo, and you must log out once afterwards"
 echo "so the linuwu_sense group applies."
 echo
-read -r -p "Install the Linuwu Sense driver now? [y/N] " ans
-ans="${ans:-N}"
+if [[ "${NITROSENSE_ASSUME_YES:-}" == "1" ]]; then
+  ans=y
+else
+  read -r -p "Install the Linuwu Sense driver now? [y/N] " ans
+  ans="${ans:-N}"
+fi
 if [[ "$ans" != [yY] ]]; then
   echo "OK. Run this again and accept when you want the driver."
   echo "Launch GUI: $ROOT/bin/nitrosense"
@@ -57,7 +61,7 @@ if [[ "$ans" != [yY] ]]; then
 fi
 
 echo "==> Div-Linuwu-Sense driver (ANV15-51 covered by DAMX)"
-mkdir -p "$ROOT/vendor"
+mkdir -p "$(dirname "$VENDOR")"
 if [[ ! -d "$VENDOR/.git" ]]; then
   git clone --depth 1 "$REPO" "$VENDOR"
 else
@@ -68,6 +72,9 @@ if ! make -C "$VENDOR" install; then
   echo
   echo "Linuwu build failed on kernel $(uname -r)."
   echo "Fallback: acer_wmi.predator_v4=1 (modes + PWM fans, no battery limiter)."
+  if [[ "${NITROSENSE_ASSUME_YES:-}" == "1" ]]; then
+    exit 1
+  fi
   read -r -p "Apply in-tree fallback? [y/N] " fb
   if [[ "$fb" == [yY] ]]; then
     echo "options acer_wmi predator_v4=1" | sudo tee /etc/modprobe.d/nitrosense-acer-wmi.conf
@@ -90,8 +97,10 @@ sudo systemd-tmpfiles --create "$TMPCONF" || true
 sudo "$ROOT/bin/nitrosense-fixperms" || true
 
 POLICY_DST=/usr/share/polkit-1/actions/org.alfred.nitrosense.policy
-sed "s|@HELPER@|$ROOT/bin/nitrosense-helper|g" \
-  "$ROOT/data/org.alfred.nitrosense.policy.in" | sudo tee "$POLICY_DST" >/dev/null
+if [[ ! -x /usr/libexec/nitrosense-helper ]]; then
+  sed "s|@HELPER@|$ROOT/bin/nitrosense-helper|g" \
+    "$ROOT/data/org.alfred.nitrosense.policy.in" | sudo tee "$POLICY_DST" >/dev/null
+fi
 
 echo
 echo "Driver installed. If writes fail, log out/in (linuwu_sense group)."

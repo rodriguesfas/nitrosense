@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import shlex
+import shutil
 import signal
 import subprocess
 import sys
@@ -1723,13 +1725,76 @@ class NitroWindow(Adw.ApplicationWindow):
         self._run(self.hw.set_rgb_mode, mode, 5, 100, 1, 255, 106, 0)
 
     def _on_setup_help(self, _btn) -> None:
-        dialog = Adw.MessageDialog(
-            transient_for=self,
-            heading=t("set.install_title"),
-            body=t("set.install_body", setup=SETUP),
+        snap = self.hw.snapshot()
+        if snap.caps.driver == "linuwu":
+            fw = "—"
+            if self.hw.sense is not None:
+                try:
+                    fw = (self.hw.sense / "version").read_text(encoding="utf-8").strip() or "—"
+                except OSError:
+                    fw = "—"
+            dialog = Adw.MessageDialog(
+                transient_for=self,
+                heading=t("set.install_done_title"),
+                body=t("set.install_done_body", fw=fw),
+            )
+            dialog.add_response("ok", t("ok"))
+            dialog.add_response("reinstall", t("set.install_reinstall"))
+            dialog.set_default_response("ok")
+            dialog.connect("response", self._on_setup_resp)
+            dialog.present()
+            return
+        self._begin_driver_setup()
+
+    def _on_setup_resp(self, _dialog, response: str) -> None:
+        if response == "reinstall":
+            self._begin_driver_setup()
+
+    def _setup_script(self) -> Path:
+        for path in (
+            SETUP,
+            Path("/usr/share/nitrosense/setup.sh"),
+            Path("/usr/bin/nitrosense-setup"),
+        ):
+            if path.is_file() and os.access(path, os.X_OK):
+                return path
+        raise FileNotFoundError(t("set.install_missing"))
+
+    def _begin_driver_setup(self) -> None:
+        try:
+            script = self._setup_script()
+        except FileNotFoundError as exc:
+            self._toast(str(exc))
+            return
+        kver = os.uname().release
+        if not Path(f"/lib/modules/{kver}/build").is_dir():
+            self._toast(t("set.install_no_headers", kver=kver))
+            return
+        close = t("set.install_close")
+        inner = (
+            f"export NITROSENSE_ASSUME_YES=1; "
+            f"{shlex.quote(str(script))}; "
+            f"ec=$?; echo; "
+            f"if [ \"$ec\" -eq 0 ]; then echo OK; else echo FAILED $ec; fi; "
+            f"read -r -p {shlex.quote(close + ' ')} _"
         )
-        dialog.add_response("ok", t("ok"))
-        dialog.present()
+        launches: list[list[str]] = []
+        if shutil.which("gnome-terminal"):
+            launches.append(["gnome-terminal", "--", "bash", "-lc", inner])
+        if shutil.which("kgx"):
+            launches.append(["kgx", "-e", "bash", "-lc", inner])
+        if shutil.which("konsole"):
+            launches.append(["konsole", "-e", "bash", "-lc", inner])
+        if shutil.which("x-terminal-emulator"):
+            launches.append(["x-terminal-emulator", "-e", "bash", "-lc", inner])
+        for cmd in launches:
+            try:
+                subprocess.Popen(cmd, start_new_session=True)
+                self._toast(t("set.install_body"))
+                return
+            except OSError:
+                continue
+        self._toast(t("set.install_no_term", setup=script))
 
     def _on_autostart(self, _switch: Gtk.Switch, state: bool) -> bool:
         if self._busy:
