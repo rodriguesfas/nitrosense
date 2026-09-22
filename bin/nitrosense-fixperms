@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Ajusta permissões do sysfs NitroSense para o grupo do operador."""
+"""Fix NitroSense sysfs permissions for the operator group."""
 
 from __future__ import annotations
 
@@ -38,7 +38,7 @@ def main() -> int:
         pkexec_uid = os.environ.get("PKEXEC_UID")
         if pkexec_uid and pkexec_uid.isdigit():
             user = pwd.getpwuid(int(pkexec_uid)).pw_name
-    user = user or os.environ.get("USER") or "fasr"
+    user = user or os.environ.get("USER") or "root"
     uid = pwd.getpwnam(user).pw_uid
     try:
         gid = grp.getgrnam(user).gr_gid

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tecla NitroSense sem grab (não rouba WLAN / touchpad do Acer WMI)."""
+"""NitroSense key listener without EVIOCGRAB (does not steal WLAN / touchpad from Acer WMI)."""
 
 from __future__ import annotations
 

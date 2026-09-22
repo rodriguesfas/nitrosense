@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Atalho da tecla N (NitroSense) + entrada no menu — sem sudo.
+# Bind the dedicated N key (NitroSense) and a menu entry — no sudo.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 UNIT_DIR="$HOME/.config/systemd/user"
@@ -27,5 +27,5 @@ gsettings set "${KB}.custom-keybinding:${KB_PATH}" name "NitroSense"
 gsettings set "${KB}.custom-keybinding:${KB_PATH}" command "$ROOT/bin/nitrosense"
 gsettings set "${KB}.custom-keybinding:${KB_PATH}" binding "XF86Launch1"
 
-echo "Tecla NitroSense (PROG1 / XF86Launch1) → $ROOT/bin/nitrosense"
-echo "Serviço: systemctl --user status nitrosense-hotkey.service"
+echo "NitroSense key (PROG1 / XF86Launch1) → $ROOT/bin/nitrosense"
+echo "Service: systemctl --user status nitrosense-hotkey.service"

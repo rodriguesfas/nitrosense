@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Instala driver Linuwu + atalho da GUI NitroSense Linux.
+# Install the Linuwu driver and a desktop entry for NitroSense Linux.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
@@ -14,7 +14,7 @@ APP_ICON_DIR="$HOME/.local/share/icons/hicolor/scalable/apps"
 
 need_cmd() {
   command -v "$1" >/dev/null 2>&1 || {
-    echo "falta $1" >&2
+    echo "missing $1" >&2
     exit 1
   }
 }
@@ -24,11 +24,11 @@ need_cmd make
 need_cmd python3
 
 if [[ ! -d /lib/modules/$(uname -r)/build ]]; then
-  echo "Instala linux-headers-$(uname -r) antes." >&2
+  echo "Install linux-headers-$(uname -r) first." >&2
   exit 1
 fi
 
-echo "==> GUI (atalho do utilizador)"
+echo "==> GUI (user desktop entry)"
 mkdir -p "$(dirname "$APP_DESKTOP")" "$APP_ICON_DIR"
 install -m 0755 "$ROOT/bin/nitrosense" "$ROOT/bin/nitrosense"
 install -m 0755 "$ROOT/bin/nitrosense-helper" "$ROOT/bin/nitrosense-helper"
@@ -40,19 +40,19 @@ chmod 0644 "$APP_DESKTOP"
 update-desktop-database "$HOME/.local/share/applications" 2>/dev/null || true
 
 echo
-echo "A GUI já abre sem driver (CPU/GPU). Para fans, modos e bateria precisa do Linuwu."
-echo "Isto substitui acer_wmi, pede sudo, e no 1º login depois tens de sair da sessão"
-echo "para o grupo linuwu_sense aplicar."
+echo "The GUI already opens without a driver (CPU/GPU). Fans, modes and battery need Linuwu."
+echo "This replaces acer_wmi, asks for sudo, and you must log out once afterwards"
+echo "so the linuwu_sense group applies."
 echo
-read -r -p "Instalar driver Linuwu Sense agora? [s/N] " ans
+read -r -p "Install the Linuwu Sense driver now? [y/N] " ans
 ans="${ans:-N}"
-if [[ "$ans" != [sS] ]]; then
-  echo "Ok. Corre de novo e aceita quando quiseres o driver."
-  echo "Abrir GUI: $ROOT/bin/nitrosense"
+if [[ "$ans" != [yY] ]]; then
+  echo "OK. Run this again and accept when you want the driver."
+  echo "Launch GUI: $ROOT/bin/nitrosense"
   exit 0
 fi
 
-echo "==> Driver Div-Linuwu-Sense (ANV15-51 testado no DAMX)"
+echo "==> Div-Linuwu-Sense driver (ANV15-51 covered by DAMX)"
 mkdir -p "$ROOT/vendor"
 if [[ ! -d "$VENDOR/.git" ]]; then
   git clone --depth 1 "$REPO" "$VENDOR"
@@ -62,18 +62,18 @@ fi
 
 if ! make -C "$VENDOR" install; then
   echo
-  echo "Compilação Linuwu falhou neste kernel $(uname -r)."
-  echo "Fallback: acer_wmi.predator_v4=1 (modos + fans PWM, sem limite de bateria)."
-  read -r -p "Aplicar fallback in-tree? [s/N] " fb
-  if [[ "$fb" == [sS] ]]; then
+  echo "Linuwu build failed on kernel $(uname -r)."
+  echo "Fallback: acer_wmi.predator_v4=1 (modes + PWM fans, no battery limiter)."
+  read -r -p "Apply in-tree fallback? [y/N] " fb
+  if [[ "$fb" == [yY] ]]; then
     echo "options acer_wmi predator_v4=1" | sudo tee /etc/modprobe.d/nitrosense-acer-wmi.conf
     sudo update-initramfs -u
-    echo "Reinicia para o parâmetro entrar."
+    echo "Reboot for the parameter to take effect."
   fi
   exit 1
 fi
 
-# ANV15-51: tmpfiles do Linuwu omitem backlight_timeout e platform_profile.
+# ANV15-51: Linuwu tmpfiles omit backlight_timeout and platform_profile.
 TMPCONF=/etc/tmpfiles.d/linuwu_sense.conf
 SYSFS_BASE=/sys/module/linuwu_sense/drivers/platform:acer-wmi/acer-wmi
 {
@@ -90,6 +90,6 @@ sed "s|@HELPER@|$ROOT/bin/nitrosense-helper|g" \
   "$ROOT/data/org.alfred.nitrosense.policy.in" | sudo tee "$POLICY_DST" >/dev/null
 
 echo
-echo "Driver instalado. Se os writes falharem, faz logout/login (grupo linuwu_sense)."
-echo "Abrir: $ROOT/bin/nitrosense"
-echo "Ou procura NitroSense Linux no menu."
+echo "Driver installed. If writes fail, log out/in (linuwu_sense group)."
+echo "Launch: $ROOT/bin/nitrosense"
+echo "Or search NitroSense in the app menu."

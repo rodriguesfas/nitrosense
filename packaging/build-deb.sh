@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Empacota a GUI + helper (Python). O módulo Linuwu não entra no .deb.
+# Package the GUI + helper (Python). The Linuwu module is not in the .deb.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 VERSION="$(tr -d '[:space:]' < "$ROOT/VERSION")"
 if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-  echo "VERSION inválido: $VERSION" >&2
+  echo "invalid VERSION: $VERSION" >&2
   exit 1
 fi
 

@@ -30,13 +30,13 @@ jobs:
           DEB="$(ls dist/nitrosense_${VERSION}_all.deb)"
           DEB_BASE="$(basename "$DEB")"
           if git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null 2>&1; then
-            echo "A tag ${TAG} já existe. Sobe VERSION em dev antes de voltar a mergear em main."
+            echo "Tag ${TAG} already exists. Bump VERSION on dev before merging to main again."
             exit 1
           fi
           cat > /tmp/release-notes.md <<END
-          Pacote Debian \`${DEB_BASE}\` gerado a partir de \`main\`.
+          Debian package \`${DEB_BASE}\` built from \`main\`.
 
-          Instalar:
+          Install:
 
           \`\`\`bash
           sudo apt install ./${DEB_BASE}
@@ -44,7 +44,7 @@ jobs:
           nitrosense
           \`\`\`
 
-          O .deb traz a GUI. O módulo de kernel Linuwu continua a instalar-se à parte.
+          The .deb ships the GUI. The Linuwu kernel module is still installed separately.
           END
           sed -i 's/^[[:space:]]*//' /tmp/release-notes.md
           gh release create "$TAG" "$DEB" \
