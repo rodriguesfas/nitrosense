@@ -92,7 +92,7 @@ _STRINGS: dict[str, dict[str, str]] = {
         "set.language": "Language",
         "set.language_hint": "English or Brazilian Portuguese. Applied immediately.",
         "set.tgp": "GPU POWER",
-        "set.tgp_hint": "RTX laptop TGP via nvidia-smi (not Linuwu). Default and Boost. Needs admin once; the limit resets at reboot.",
+        "set.tgp_hint": "RTX laptop TGP via nvidia-smi (not Linuwu). Default and Boost. The last choice is restored at login without a password prompt.",
         "set.tgp_now": "Now {watts} W",
         "set.tgp_default": "Default  ·  {watts} W",
         "set.tgp_boost": "Boost  ·  {watts} W",
@@ -230,7 +230,7 @@ _STRINGS: dict[str, dict[str, str]] = {
         "set.language": "Idioma",
         "set.language_hint": "Inglês ou português do Brasil. Aplica na hora.",
         "set.tgp": "POTÊNCIA DA GPU",
-        "set.tgp_hint": "TGP do RTX via nvidia-smi (não é Linuwu). Padrão e Boost. Pede admin uma vez; o limite volta no reboot.",
+        "set.tgp_hint": "TGP do RTX via nvidia-smi (não é Linuwu). Padrão e Boost. A última escolha volta no login, sem pedir senha.",
         "set.tgp_now": "Agora {watts} W",
         "set.tgp_default": "Padrão  ·  {watts} W",
         "set.tgp_boost": "Boost  ·  {watts} W",
@@ -293,8 +293,11 @@ _lang = "en"
 
 
 def detect_lang() -> str:
+    env = os.environ.get("NITROSENSE_LANG") or ""
+    if env in _STRINGS:
+        return env
     try:
-        data = json.loads(UI_PATH.read_text(encoding="utf-8"))
+        data = load_ui()
         lang = str(data.get("lang") or "")
         if lang in _STRINGS:
             return lang
@@ -306,19 +309,25 @@ def detect_lang() -> str:
     return "en"
 
 
+def load_ui() -> dict:
+    try:
+        data = json.loads(UI_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, TypeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def save_ui(**fields) -> None:
+    UI_PATH.parent.mkdir(parents=True, exist_ok=True)
+    payload = load_ui()
+    payload.update(fields)
+    UI_PATH.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+
 def save_lang(lang: str) -> None:
     if lang not in _STRINGS:
         lang = "en"
-    UI_PATH.parent.mkdir(parents=True, exist_ok=True)
-    payload: dict = {}
-    try:
-        payload = json.loads(UI_PATH.read_text(encoding="utf-8"))
-        if not isinstance(payload, dict):
-            payload = {}
-    except (OSError, json.JSONDecodeError):
-        payload = {}
-    payload["lang"] = lang
-    UI_PATH.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    save_ui(lang=lang)
 
 
 def set_lang(lang: str) -> str:

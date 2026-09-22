@@ -17,7 +17,7 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Adw, Gdk, GLib, Gtk, Pango
 
-from nitrosense.gpu import set_tgp
+from nitrosense.gpu import restore_saved_tgp, set_tgp
 from nitrosense.hardware import NITRO_MODES, Hardware
 from nitrosense.i18n import LANG_LABELS, LANGS, lang as ui_lang, save_lang, set_lang, t
 from nitrosense.lighting import (
@@ -257,6 +257,7 @@ class NitroWindow(Adw.ApplicationWindow):
         self.tgp_buttons: dict[str, Gtk.Button] = {}
         self._tgp_default_w: int | None = None
         self._tgp_max_w: int | None = None
+        self._tgp_restore_tried = False
         self._proc_tick = 0
         self._build()
         GLib.timeout_add(1000, self._tick)
@@ -1228,6 +1229,9 @@ class NitroWindow(Adw.ApplicationWindow):
             self._drv_facts["Profile"].set_text(snap.profile or "—")
             self._drv_facts["Choices"].set_text(" ".join(snap.profile_choices) or "—")
         self._sync_tgp(sensors)
+        if not self._tgp_restore_tried:
+            self._tgp_restore_tried = True
+            GLib.idle_add(self._restore_saved_tgp)
 
     def _set_switch(self, widget: Gtk.Switch, enabled: bool, value: bool | None) -> None:
         widget.set_sensitive(enabled)
@@ -1289,6 +1293,13 @@ class NitroWindow(Adw.ApplicationWindow):
         if watts is None:
             return
         self._run(set_tgp, int(watts))
+
+    def _restore_saved_tgp(self) -> bool:
+        try:
+            restore_saved_tgp()
+        except Exception:  # noqa: BLE001
+            pass
+        return False
 
     def _run(self, fn, *args) -> None:
         try:

@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import sys
 from dataclasses import dataclass
 
 from nitrosense.hardware import helper_path
+from nitrosense.i18n import load_ui, save_ui
 
 
 @dataclass
@@ -26,6 +28,19 @@ def _f(raw: str) -> float | None:
         return float(raw)
     except ValueError:
         return None
+
+
+def saved_tgp() -> int | None:
+    raw = load_ui().get("tgp_watts")
+    try:
+        watts = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return watts if watts > 0 else None
+
+
+def save_tgp_choice(watts: int) -> None:
+    save_ui(tgp_watts=int(watts))
 
 
 def read_tgp() -> TgpInfo | None:
@@ -65,7 +80,7 @@ def read_tgp() -> TgpInfo | None:
     )
 
 
-def set_tgp(watts: int) -> None:
+def set_tgp(watts: int, *, persist: bool = True) -> None:
     info = read_tgp()
     lo = info.min_w if info and info.min_w is not None else 5
     hi = info.max_w if info and info.max_w is not None else 75
@@ -80,19 +95,54 @@ def set_tgp(watts: int) -> None:
         )
     except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
         raise RuntimeError("nvidia-smi is not available") from exc
-    if result.returncode == 0:
-        return
-    helper = helper_path()
-    pkexec = shutil.which("pkexec")
-    if helper is None or pkexec is None:
-        raise PermissionError("TGP needs pkexec / nitrosense-helper")
-    privileged = subprocess.run(
-        [pkexec, str(helper), "tgp", str(watts)],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=60,
-    )
-    if privileged.returncode != 0:
-        err = (privileged.stderr or privileged.stdout or result.stderr or "").strip()
-        raise RuntimeError(err or "could not set GPU power limit")
+    if result.returncode != 0:
+        helper = helper_path()
+        pkexec = shutil.which("pkexec")
+        if helper is None or pkexec is None:
+            raise PermissionError("TGP needs pkexec / nitrosense-helper")
+        privileged = subprocess.run(
+            [
+                pkexec,
+                "--action-id",
+                "org.alfred.nitrosense.tgp",
+                str(helper),
+                "tgp",
+                str(watts),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        if privileged.returncode != 0:
+            err = (privileged.stderr or privileged.stdout or result.stderr or "").strip()
+            raise RuntimeError(err or "could not set GPU power limit")
+    if persist:
+        save_tgp_choice(watts)
+
+
+def restore_saved_tgp() -> bool:
+    want = saved_tgp()
+    if want is None:
+        return False
+    info = read_tgp()
+    if info is None:
+        return False
+    if info.current_w is not None and int(info.current_w) == int(want):
+        return False
+    set_tgp(want, persist=False)
+    return True
+
+
+def main(argv: list[str] | None = None) -> int:
+    del argv
+    try:
+        restore_saved_tgp()
+    except Exception as exc:  # noqa: BLE001
+        print(str(exc), file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
