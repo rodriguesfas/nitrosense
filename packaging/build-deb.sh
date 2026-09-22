@@ -24,6 +24,7 @@ mkdir -p \
   "$STAGE/usr/share/icons/hicolor/scalable/apps" \
   "$STAGE/usr/share/polkit-1/actions" \
   "$STAGE/usr/lib/systemd/user" \
+  "$STAGE/etc/xdg/autostart" \
   "$STAGE/usr/share/doc/nitrosense"
 
 cp -a "$ROOT/nitrosense" "$STAGE/usr/share/nitrosense/nitrosense"
@@ -40,6 +41,7 @@ find "$STAGE" -type d -name '__pycache__' -exec rm -rf {} +
 find "$STAGE" -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete
 
 install -m 0755 "$ROOT/bin/nitrosense" "$STAGE/usr/bin/nitrosense"
+install -m 0755 "$ROOT/bin/nitrosense-tgp-restore" "$STAGE/usr/bin/nitrosense-tgp-restore"
 install -m 0755 "$ROOT/bin/nitrosense-helper" "$STAGE/usr/libexec/nitrosense-helper"
 install -m 0755 "$ROOT/bin/nitrosense-hotkey" "$STAGE/usr/libexec/nitrosense-hotkey"
 install -m 0755 "$ROOT/bin/nitrosense-fixperms" "$STAGE/usr/libexec/nitrosense-fixperms"
@@ -59,6 +61,9 @@ sed 's|@HELPER@|/usr/libexec/nitrosense-helper|g' \
 sed 's|@HOTKEY@|/usr/libexec/nitrosense-hotkey|g' \
   "$ROOT/data/nitrosense-hotkey.service.in" \
   > "$STAGE/usr/lib/systemd/user/nitrosense-hotkey.service"
+sed 's|@EXEC@|nitrosense-tgp-restore|g' \
+  "$ROOT/data/nitrosense-tgp.desktop.in" \
+  > "$STAGE/etc/xdg/autostart/nitrosense-tgp.desktop"
 
 SIZE="$(du -sk "$STAGE" | awk '{print $1}')"
 
