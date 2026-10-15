@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from pathlib import Path
 
 import cairo
 from gi.repository import Gio, GLib
+
+_log = logging.getLogger("nitrosense.tray")
 
 ROOT = Path(__file__).resolve().parents[1]
 _BUS_NAME = "org.alfred.nitrosense.status"
@@ -286,35 +289,29 @@ class TrayIcon:
                 packed[key] = GLib.Variant("s", str(val))
         return packed
 
-    def _check(self, ident: int, label: str, on: bool) -> tuple:
-        return (
-            ident,
-            self._pack(
-                {
-                    "label": label,
-                    "enabled": True,
-                    "visible": True,
-                    "toggle-type": "checkmark",
-                    "toggle-state": 1 if on else 0,
-                }
-            ),
-            [],
-        )
+    def _check(self, ident: int, label: str, on: bool, *, icon_name: str | None = None) -> tuple:
+        props: dict = {
+            "label": label,
+            "enabled": True,
+            "visible": True,
+            "toggle-type": "checkmark",
+            "toggle-state": 1 if on else 0,
+        }
+        if icon_name:
+            props["icon-name"] = icon_name
+        return (ident, self._pack(props), [])
 
-    def _radio(self, ident: int, label: str, key: str) -> tuple:
-        return (
-            ident,
-            self._pack(
-                {
-                    "label": label,
-                    "enabled": True,
-                    "visible": True,
-                    "toggle-type": "radio",
-                    "toggle-state": 1 if self._mode == key else 0,
-                }
-            ),
-            [],
-        )
+    def _radio(self, ident: int, label: str, key: str, *, icon_name: str | None = None) -> tuple:
+        props: dict = {
+            "label": label,
+            "enabled": True,
+            "visible": True,
+            "toggle-type": "radio",
+            "toggle-state": 1 if self._mode == key else 0,
+        }
+        if icon_name:
+            props["icon-name"] = icon_name
+        return (ident, self._pack(props), [])
 
     def _item(self, ident: int, **props) -> tuple:
         return (ident, self._pack(props), [])
@@ -331,15 +328,47 @@ class TrayIcon:
 
     def _menu_tree(self):
         kids = [
-            self._item(1, label=self._L("tray.show", "Show window"), enabled=True, visible=True),
+            self._item(
+                1,
+                label=self._L("tray.show", "Show window"),
+                enabled=True,
+                visible=True,
+                **{"icon-name": "window-new-symbolic"},
+            ),
             self._item(2, type="separator", visible=True),
-            self._radio(10, self._L("mode.quiet", "Quiet"), "quiet"),
-            self._radio(11, self._L("mode.default", "Default"), "balanced"),
-            self._radio(12, self._L("mode.performance", "Performance"), "performance"),
+            self._radio(
+                10,
+                self._L("mode.quiet", "Quiet"),
+                "quiet",
+                icon_name="power-profile-power-saver-symbolic",
+            ),
+            self._radio(
+                11,
+                self._L("mode.default", "Default"),
+                "balanced",
+                icon_name="power-profile-balanced-symbolic",
+            ),
+            self._radio(
+                12,
+                self._L("mode.performance", "Performance"),
+                "performance",
+                icon_name="power-profile-performance-symbolic",
+            ),
             self._item(13, type="separator", visible=True),
-            self._check(20, self._L("tray.gpu_unlock", "Unlock GPU"), self._gpu_unlocked),
+            self._check(
+                20,
+                self._L("tray.gpu_unlock", "Unlock GPU"),
+                self._gpu_unlocked,
+                icon_name="input-gaming-symbolic",
+            ),
             self._item(21, type="separator", visible=True),
-            self._item(30, label=self._L("tray.quit", "Quit"), enabled=True, visible=True),
+            self._item(
+                30,
+                label=self._L("tray.quit", "Quit"),
+                enabled=True,
+                visible=True,
+                **{"icon-name": "application-exit-symbolic"},
+            ),
         ]
         root = (0, self._pack({"children-display": "submenu"}), kids)
         return root, kids
@@ -432,23 +461,26 @@ class TrayIcon:
         self._emit_layout()
 
     def _menu_click(self, ident: int) -> bool:
-        if ident == 1:
-            self._on_show()
-        elif ident == 10 and self._on_mode:
-            self.set_mode("quiet")
-            self._on_mode("quiet")
-        elif ident == 11 and self._on_mode:
-            self.set_mode("balanced")
-            self._on_mode("balanced")
-        elif ident == 12 and self._on_mode:
-            self.set_mode("performance")
-            self._on_mode("performance")
-        elif ident == 20 and self._on_gpu_unlock:
-            nxt = not self._gpu_unlocked
-            self.set_gpu_unlocked(nxt)
-            self._on_gpu_unlock(nxt)
-        elif ident == 30:
-            self._on_quit()
+        try:
+            if ident == 1:
+                self._on_show()
+            elif ident == 10 and self._on_mode:
+                self.set_mode("quiet")
+                self._on_mode("quiet")
+            elif ident == 11 and self._on_mode:
+                self.set_mode("balanced")
+                self._on_mode("balanced")
+            elif ident == 12 and self._on_mode:
+                self.set_mode("performance")
+                self._on_mode("performance")
+            elif ident == 20 and self._on_gpu_unlock:
+                nxt = not self._gpu_unlocked
+                self.set_gpu_unlocked(nxt)
+                self._on_gpu_unlock(nxt)
+            elif ident == 30:
+                self._on_quit()
+        except Exception:  # noqa: BLE001
+            _log.exception("tray click id=%s raised", ident)
         return False
 
     def close(self) -> None:
