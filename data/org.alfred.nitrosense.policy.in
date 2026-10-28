@@ -27,4 +27,16 @@
     <annotate key="org.freedesktop.policykit.exec.argv1">tgp</annotate>
     <annotate key="org.freedesktop.policykit.exec.allow_gui">true</annotate>
   </action>
+  <action id="org.alfred.nitrosense.cpu">
+    <description>NitroSense Linux: set Intel CPU power limit</description>
+    <message>NitroSense Linux needs to set the CPU RAPL PL1.</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>yes</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">@HELPER@</annotate>
+    <annotate key="org.freedesktop.policykit.exec.argv1">cpu</annotate>
+    <annotate key="org.freedesktop.policykit.exec.allow_gui">true</annotate>
+  </action>
 </policyconfig>

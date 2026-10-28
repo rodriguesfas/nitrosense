@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from pathlib import Path
 
 import cairo
 from gi.repository import Gio, GLib
+
+_log = logging.getLogger("nitrosense.tray")
+_KEEP = object()
 
 ROOT = Path(__file__).resolve().parents[1]
 _BUS_NAME = "org.alfred.nitrosense.status"
@@ -150,15 +154,20 @@ class TrayIcon:
         on_quit: Callable[[], None],
         on_mode: Callable[[str], None] | None = None,
         on_gpu_unlock: Callable[[bool], None] | None = None,
+        on_cpu_unlock: Callable[[bool], None] | None = None,
         labels: dict[str, str] | None = None,
     ) -> None:
         self._on_show = on_show
         self._on_quit = on_quit
         self._on_mode = on_mode
         self._on_gpu_unlock = on_gpu_unlock
+        self._on_cpu_unlock = on_cpu_unlock
         self._labels = labels or {}
         self._mode: str | None = None
         self._gpu_unlocked = False
+        self._gpu_live_w: int | None = None
+        self._cpu_unlocked = False
+        self._cpu_live_w: int | None = None
         self._revision = 1
         self._pixmap = _icon_pixmap(32)
         self._sni_id = 0
@@ -182,11 +191,37 @@ class TrayIcon:
         self._mode = key
         self._emit_mode_props()
 
-    def set_gpu_unlocked(self, unlocked: bool) -> None:
-        if unlocked == self._gpu_unlocked:
+    def set_gpu_unlocked(
+        self, unlocked: bool, live_w: int | None | object = _KEEP
+    ) -> None:
+        watts = self._gpu_live_w if live_w is _KEEP else live_w
+        if unlocked == self._gpu_unlocked and watts == self._gpu_live_w:
             return
         self._gpu_unlocked = unlocked
+        self._gpu_live_w = watts if isinstance(watts, int) else None
         self._emit_mode_props()
+
+    def _gpu_unlock_label(self) -> str:
+        base = self._L("tray.gpu_unlock", "Unlock GPU")
+        if self._gpu_live_w is None:
+            return base
+        return f"{base}  ·  {self._gpu_live_w} W"
+
+    def set_cpu_unlocked(
+        self, unlocked: bool, live_w: int | None | object = _KEEP
+    ) -> None:
+        watts = self._cpu_live_w if live_w is _KEEP else live_w
+        if unlocked == self._cpu_unlocked and watts == self._cpu_live_w:
+            return
+        self._cpu_unlocked = unlocked
+        self._cpu_live_w = watts if isinstance(watts, int) else None
+        self._emit_mode_props()
+
+    def _cpu_unlock_label(self) -> str:
+        base = self._L("tray.cpu_unlock", "Unlock CPU")
+        if self._cpu_live_w is None:
+            return base
+        return f"{base}  ·  {self._cpu_live_w} W"
 
     def _on_bus(self, conn: Gio.DBusConnection, _name: str) -> None:
         self._conn = conn
@@ -286,35 +321,29 @@ class TrayIcon:
                 packed[key] = GLib.Variant("s", str(val))
         return packed
 
-    def _check(self, ident: int, label: str, on: bool) -> tuple:
-        return (
-            ident,
-            self._pack(
-                {
-                    "label": label,
-                    "enabled": True,
-                    "visible": True,
-                    "toggle-type": "checkmark",
-                    "toggle-state": 1 if on else 0,
-                }
-            ),
-            [],
-        )
+    def _check(self, ident: int, label: str, on: bool, *, icon_name: str | None = None) -> tuple:
+        props: dict = {
+            "label": label,
+            "enabled": True,
+            "visible": True,
+            "toggle-type": "checkmark",
+            "toggle-state": 1 if on else 0,
+        }
+        if icon_name:
+            props["icon-name"] = icon_name
+        return (ident, self._pack(props), [])
 
-    def _radio(self, ident: int, label: str, key: str) -> tuple:
-        return (
-            ident,
-            self._pack(
-                {
-                    "label": label,
-                    "enabled": True,
-                    "visible": True,
-                    "toggle-type": "radio",
-                    "toggle-state": 1 if self._mode == key else 0,
-                }
-            ),
-            [],
-        )
+    def _radio(self, ident: int, label: str, key: str, *, icon_name: str | None = None) -> tuple:
+        props: dict = {
+            "label": label,
+            "enabled": True,
+            "visible": True,
+            "toggle-type": "radio",
+            "toggle-state": 1 if self._mode == key else 0,
+        }
+        if icon_name:
+            props["icon-name"] = icon_name
+        return (ident, self._pack(props), [])
 
     def _item(self, ident: int, **props) -> tuple:
         return (ident, self._pack(props), [])
@@ -331,15 +360,53 @@ class TrayIcon:
 
     def _menu_tree(self):
         kids = [
-            self._item(1, label=self._L("tray.show", "Show window"), enabled=True, visible=True),
+            self._item(
+                1,
+                label=self._L("tray.show", "Show window"),
+                enabled=True,
+                visible=True,
+                **{"icon-name": "window-new-symbolic"},
+            ),
             self._item(2, type="separator", visible=True),
-            self._radio(10, self._L("mode.quiet", "Quiet"), "quiet"),
-            self._radio(11, self._L("mode.default", "Default"), "balanced"),
-            self._radio(12, self._L("mode.performance", "Performance"), "performance"),
+            self._radio(
+                10,
+                self._L("mode.quiet", "Quiet"),
+                "quiet",
+                icon_name="power-profile-power-saver-symbolic",
+            ),
+            self._radio(
+                11,
+                self._L("mode.default", "Default"),
+                "balanced",
+                icon_name="power-profile-balanced-symbolic",
+            ),
+            self._radio(
+                12,
+                self._L("mode.performance", "Performance"),
+                "performance",
+                icon_name="power-profile-performance-symbolic",
+            ),
             self._item(13, type="separator", visible=True),
-            self._check(20, self._L("tray.gpu_unlock", "Unlock GPU"), self._gpu_unlocked),
+            self._check(
+                19,
+                self._cpu_unlock_label(),
+                self._cpu_unlocked,
+                icon_name="cpu-symbolic",
+            ),
+            self._check(
+                20,
+                self._gpu_unlock_label(),
+                self._gpu_unlocked,
+                icon_name="input-gaming-symbolic",
+            ),
             self._item(21, type="separator", visible=True),
-            self._item(30, label=self._L("tray.quit", "Quit"), enabled=True, visible=True),
+            self._item(
+                30,
+                label=self._L("tray.quit", "Quit"),
+                enabled=True,
+                visible=True,
+                **{"icon-name": "application-exit-symbolic"},
+            ),
         ]
         root = (0, self._pack({"children-display": "submenu"}), kids)
         return root, kids
@@ -417,7 +484,7 @@ class TrayIcon:
         if self._conn is None:
             return
         updated = []
-        for ident in (10, 11, 12, 20):
+        for ident in (10, 11, 12, 19, 20):
             props = self._props_for(ident)
             if props is None:
                 continue
@@ -432,23 +499,30 @@ class TrayIcon:
         self._emit_layout()
 
     def _menu_click(self, ident: int) -> bool:
-        if ident == 1:
-            self._on_show()
-        elif ident == 10 and self._on_mode:
-            self.set_mode("quiet")
-            self._on_mode("quiet")
-        elif ident == 11 and self._on_mode:
-            self.set_mode("balanced")
-            self._on_mode("balanced")
-        elif ident == 12 and self._on_mode:
-            self.set_mode("performance")
-            self._on_mode("performance")
-        elif ident == 20 and self._on_gpu_unlock:
-            nxt = not self._gpu_unlocked
-            self.set_gpu_unlocked(nxt)
-            self._on_gpu_unlock(nxt)
-        elif ident == 30:
-            self._on_quit()
+        try:
+            if ident == 1:
+                self._on_show()
+            elif ident == 10 and self._on_mode:
+                self.set_mode("quiet")
+                self._on_mode("quiet")
+            elif ident == 11 and self._on_mode:
+                self.set_mode("balanced")
+                self._on_mode("balanced")
+            elif ident == 12 and self._on_mode:
+                self.set_mode("performance")
+                self._on_mode("performance")
+            elif ident == 19 and self._on_cpu_unlock:
+                nxt = not self._cpu_unlocked
+                self.set_cpu_unlocked(nxt)
+                self._on_cpu_unlock(nxt)
+            elif ident == 20 and self._on_gpu_unlock:
+                nxt = not self._gpu_unlocked
+                self.set_gpu_unlocked(nxt)
+                self._on_gpu_unlock(nxt)
+            elif ident == 30:
+                self._on_quit()
+        except Exception:  # noqa: BLE001
+            _log.exception("tray click id=%s raised", ident)
         return False
 
     def close(self) -> None:

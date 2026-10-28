@@ -710,6 +710,14 @@ class ModeIcon(Gtk.DrawingArea):
             cr.move_to(cx + r * 1.05, cy + r * 0.22)
             cr.line_to(cx + r * 0.62, cy + r * 0.82)
             cr.stroke()
+        elif kind == "cpu":
+            gap = r * 0.18
+            side = r * 0.72
+            for dx, dy in ((-1, -1), (1, -1), (-1, 1), (1, 1)):
+                x = cx + dx * (side / 2 + gap / 2) - side / 2
+                y = cy + dy * (side / 2 + gap / 2) - side / 2
+                cr.rectangle(x, y, side, side)
+                cr.fill()
         elif kind == "performance":
             s = r * 1.2
             cr.move_to(cx + s * 0.08, cy - s)

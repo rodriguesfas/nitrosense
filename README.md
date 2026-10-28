@@ -80,7 +80,8 @@ GUI dependencies: `python3-gi`, `gir1.2-gtk-4.0`, `gir1.2-adw-1`.
 | Auto / Max / Custom fans | HOME and SCENARIO — Custom writes `cpu%,gpu%` to Linuwu sysfs |
 | Scenario per-app profiles | SCENARIO — persist `~/.config/nitrosense/scenarios.json`; each rule binds Quiet/Default/Performance **and** Auto/Max/Custom fans |
 | 80% charge limit, calibration, USB charging | SETTINGS |
-| RTX TGP Default / Boost | SETTINGS — 60 W vs 75 W. On this RTX 4050 + open driver, `nvidia-smi -pl` is unsupported; Boost starts `nvidia-powerd` (Dynamic Boost). Last choice restored at login |
+| CPU RAPL PL1 / PL2 | HOME + SETTINGS — live Intel RAPL PL1 (sustained) vs PL2 (turbo ceiling, 115 W on this i5-13420H). Unlock raises PL1 toward PL2. Last choice restored at login |
+| RTX TGP Default / Boost | SETTINGS — live Current Power Limit (BIOS floor at idle, SKU ceiling under load via `nvidia-powerd`). The UI shows the watts nvidia-smi reports now, not a fake 75 W just because the daemon is running. `nvidia-smi -pl` is unsupported on this open driver. Last Boost/Default choice restored at login |
 | Backlight timeout, display brightness, Night Light | LIGHTING |
 | 4-zone RGB | Only if `four_zoned_kb` appears in sysfs. ANV15-51 is a **single-color** backlight |
 | N key | `KEY_PROG1` (Acer WMI) → XF86Launch1 + grab-free listener |
@@ -101,7 +102,7 @@ Bump `VERSION` before merging `dev` → `main`. The workflow refuses to reuse an
 
 ```
 nitrosense/     GUI + hardware + sensors
-bin/            launcher, hotkey, pkexec helper, TGP restore, fixperms
+bin/            launcher, hotkey, pkexec helper (GPU TGP + CPU RAPL), TGP/CPU restore, fixperms
 docs/           README screenshots
 packaging/      build-deb.sh
 .github/        .deb release on main

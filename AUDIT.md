@@ -25,7 +25,8 @@ Reference: Nitro V 15 manual (Home, Scenario, Fan Auto/Max/Custom, Monitoring 30
 | 30 min monitoring | 1800-point sparklines | **yes (no 3D)** |
 | Acer 3D avatar | cairo silhouette | **approximation** |
 | Scenario profiles bound to apps | `~/.config/nitrosense/scenarios.json` (mode + fans) | **yes** |
-| RTX TGP Default / Boost | Dynamic Boost via `nvidia-powerd`; `nvidia-smi -pl` unsupported on 595-open | **SETTINGS** |
+| CPU RAPL PL1 / PL2 | Intel RAPL package PL1 (sustained) vs PL2 (turbo). Unlock writes PL1 toward PL2 and EPP performance | **HOME + SETTINGS** |
+| RTX TGP Default / Boost | Dynamic Boost via `nvidia-powerd`; UI shows live Current Power Limit (not 75 W just because the daemon is up); `nvidia-smi -pl` unsupported on 595-open | **SETTINGS** |
 | App Center / Planet9 | — | **no** |
 | CoolBoost / Optimus toggle | — | **no (not every Nitro V has them)** |
 | NPU | — | **hidden unless the kernel exposes one** |

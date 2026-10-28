@@ -11,6 +11,8 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from nitrosense.gpu import smi_power_readings
+
 _cpu_prev: tuple[int, int] | None = None
 _core_prev: dict[int, tuple[int, int]] = {}
 _net_prev: tuple[str, int, int, float] | None = None
@@ -287,6 +289,19 @@ def _nvidia_gpus() -> list[GpuInfo]:
                 freq_mhz=_f(parts[9]) if len(parts) > 9 else None,
             )
         )
+    readings = smi_power_readings() if gpus else None
+    if readings is not None:
+        gpu = gpus[0]
+        if readings.current_w is not None:
+            gpu.power_limit_w = readings.current_w
+        if gpu.power_default_w is None:
+            gpu.power_default_w = readings.default_w
+        if gpu.power_min_w is None:
+            gpu.power_min_w = readings.min_w
+        if gpu.power_max_w is None:
+            gpu.power_max_w = readings.max_w
+        if gpu.power_w is None:
+            gpu.power_w = readings.draw_w
     return gpus
 
 
