@@ -11,4 +11,7 @@ else
   exit 1
 fi
 export PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}"
-exec python3 -m nitrosense.gpu "$@"
+rc=0
+python3 -m nitrosense.gpu "$@" || rc=$?
+python3 -m nitrosense.cpu "$@" || rc=$?
+exit "$rc"

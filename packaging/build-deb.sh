@@ -82,8 +82,9 @@ Installed-Size: ${SIZE}
 Homepage: https://github.com/rodriguesfas/nitrosense
 Description: Unofficial NitroSense clone for Acer Nitro on Linux
  GTK4 HUD for Acer Nitro (ANV15-51 tested): CPU/GPU/RAM, Quiet/Default/
- Performance, Auto/Max/Custom fans, per-app scenario rules, NVIDIA TGP,
- battery limiter, USB charging. Fan and profile writes need the Linuwu
+ Performance, Auto/Max/Custom fans, per-app scenario rules, CPU RAPL
+ and NVIDIA TGP unlock, battery limiter, USB charging. Fan and profile
+ writes need the Linuwu
  Sense kernel module (not in this package). After install, run
  nitrosense-setup or follow the README.
 EOF

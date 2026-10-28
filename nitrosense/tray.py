@@ -154,16 +154,20 @@ class TrayIcon:
         on_quit: Callable[[], None],
         on_mode: Callable[[str], None] | None = None,
         on_gpu_unlock: Callable[[bool], None] | None = None,
+        on_cpu_unlock: Callable[[bool], None] | None = None,
         labels: dict[str, str] | None = None,
     ) -> None:
         self._on_show = on_show
         self._on_quit = on_quit
         self._on_mode = on_mode
         self._on_gpu_unlock = on_gpu_unlock
+        self._on_cpu_unlock = on_cpu_unlock
         self._labels = labels or {}
         self._mode: str | None = None
         self._gpu_unlocked = False
         self._gpu_live_w: int | None = None
+        self._cpu_unlocked = False
+        self._cpu_live_w: int | None = None
         self._revision = 1
         self._pixmap = _icon_pixmap(32)
         self._sni_id = 0
@@ -202,6 +206,22 @@ class TrayIcon:
         if self._gpu_live_w is None:
             return base
         return f"{base}  ·  {self._gpu_live_w} W"
+
+    def set_cpu_unlocked(
+        self, unlocked: bool, live_w: int | None | object = _KEEP
+    ) -> None:
+        watts = self._cpu_live_w if live_w is _KEEP else live_w
+        if unlocked == self._cpu_unlocked and watts == self._cpu_live_w:
+            return
+        self._cpu_unlocked = unlocked
+        self._cpu_live_w = watts if isinstance(watts, int) else None
+        self._emit_mode_props()
+
+    def _cpu_unlock_label(self) -> str:
+        base = self._L("tray.cpu_unlock", "Unlock CPU")
+        if self._cpu_live_w is None:
+            return base
+        return f"{base}  ·  {self._cpu_live_w} W"
 
     def _on_bus(self, conn: Gio.DBusConnection, _name: str) -> None:
         self._conn = conn
@@ -368,6 +388,12 @@ class TrayIcon:
             ),
             self._item(13, type="separator", visible=True),
             self._check(
+                19,
+                self._cpu_unlock_label(),
+                self._cpu_unlocked,
+                icon_name="cpu-symbolic",
+            ),
+            self._check(
                 20,
                 self._gpu_unlock_label(),
                 self._gpu_unlocked,
@@ -458,7 +484,7 @@ class TrayIcon:
         if self._conn is None:
             return
         updated = []
-        for ident in (10, 11, 12, 20):
+        for ident in (10, 11, 12, 19, 20):
             props = self._props_for(ident)
             if props is None:
                 continue
@@ -485,6 +511,10 @@ class TrayIcon:
             elif ident == 12 and self._on_mode:
                 self.set_mode("performance")
                 self._on_mode("performance")
+            elif ident == 19 and self._on_cpu_unlock:
+                nxt = not self._cpu_unlocked
+                self.set_cpu_unlocked(nxt)
+                self._on_cpu_unlock(nxt)
             elif ident == 20 and self._on_gpu_unlock:
                 nxt = not self._gpu_unlocked
                 self.set_gpu_unlocked(nxt)

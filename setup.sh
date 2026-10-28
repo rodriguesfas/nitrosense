@@ -97,11 +97,8 @@ sudo systemd-tmpfiles --create "$TMPCONF" || true
 sudo "$ROOT/bin/nitrosense-fixperms" || true
 
 POLICY_DST=/usr/share/polkit-1/actions/org.alfred.nitrosense.policy
-if [[ -x /usr/libexec/nitrosense-helper ]]; then
-  HELPER_FOR_POLICY=/usr/libexec/nitrosense-helper
-else
-  HELPER_FOR_POLICY="$ROOT/bin/nitrosense-helper"
-fi
+sudo install -m 0755 "$ROOT/bin/nitrosense-helper" /usr/libexec/nitrosense-helper
+HELPER_FOR_POLICY=/usr/libexec/nitrosense-helper
 sed "s|@HELPER@|$HELPER_FOR_POLICY|g" \
   "$ROOT/data/org.alfred.nitrosense.policy.in" | sudo tee "$POLICY_DST" >/dev/null
 
