@@ -33,6 +33,10 @@ ALLOWED_NAMES = {
 MAX_VALUE = 256
 TGP_MIN = 1
 TGP_MAX = 999
+CPU_MIN = 15
+CPU_MAX = 999
+EPP_UNLOCK = "performance"
+EPP_CAP = "balance_performance"
 POWERD_UNIT = Path("/etc/systemd/system/nvidia-powerd.service")
 POWERD_DBUS = Path("/etc/dbus-1/system.d/nvidia-powerd.conf")
 POWERD_LOG = Path("/var/log/nvtopps")
@@ -117,6 +121,65 @@ def _smi_limits() -> tuple[int | None, int | None, int | None]:
     return cur, default, maximum
 
 
+def _package_rapl() -> Path | None:
+    base = Path("/sys/class/powercap")
+    if not base.is_dir():
+        return None
+    for path in sorted(base.glob("intel-rapl:*")):
+        if path.name.count(":") != 1:
+            continue
+        try:
+            name = (path / "name").read_text(encoding="utf-8").strip()
+        except OSError:
+            continue
+        if name == "package-0":
+            return path
+    return None
+
+
+def _set_epp(value: str) -> None:
+    root = Path("/sys/devices/system/cpu")
+    for cpu in sorted(root.glob("cpu[0-9]*")):
+        epp = cpu / "cpufreq" / "energy_performance_preference"
+        if not epp.is_file():
+            continue
+        try:
+            epp.write_text(value + "\n", encoding="utf-8")
+        except OSError:
+            continue
+
+
+def _cpu(raw: str) -> int:
+    try:
+        watts = int(raw)
+    except ValueError:
+        print("CPU PL1 must be an integer wattage", file=sys.stderr)
+        return 2
+    if watts < CPU_MIN or watts > CPU_MAX:
+        print("CPU PL1 out of range", file=sys.stderr)
+        return 2
+    pkg = _package_rapl()
+    if pkg is None:
+        print("intel RAPL package-0 not found", file=sys.stderr)
+        return 1
+    pl2_raw = ""
+    try:
+        pl2_raw = (pkg / "constraint_1_power_limit_uw").read_text(encoding="utf-8")
+        pl2_uw = int(pl2_raw.strip().split()[0])
+    except (OSError, ValueError):
+        pl2_uw = 0
+    try:
+        (pkg / "constraint_0_power_limit_uw").write_text(
+            str(watts * 1_000_000) + "\n", encoding="utf-8"
+        )
+    except OSError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    want_boost = pl2_uw > 0 and watts * 1_000_000 >= pl2_uw - 5_000_000
+    _set_epp(EPP_UNLOCK if want_boost else EPP_CAP)
+    return 0
+
+
 def _tgp(raw: str) -> int:
     try:
         watts = int(raw)
@@ -189,9 +252,14 @@ def _write(path: Path, value: str) -> int:
 def main(argv: list[str]) -> int:
     if len(argv) == 3 and argv[1] == "tgp":
         return _tgp(argv[2])
+    if len(argv) == 3 and argv[1] == "cpu":
+        return _cpu(argv[2])
     if len(argv) == 4 and argv[1] == "write":
         return _write(Path(argv[2]), argv[3])
-    print("usage: nitrosense-helper write <path> <value> | tgp <watts>", file=sys.stderr)
+    print(
+        "usage: nitrosense-helper write <path> <value> | tgp <watts> | cpu <watts>",
+        file=sys.stderr,
+    )
     return 2
 
 

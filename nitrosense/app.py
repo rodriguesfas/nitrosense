@@ -19,6 +19,14 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Adw, Gdk, GLib, Gtk, Pango
 
+from nitrosense.cpu import (
+    boost_pl1,
+    cpu_unlocked,
+    default_pl1,
+    read_cpu_power,
+    restore_saved_cpu,
+    set_cpu_unlock,
+)
 from nitrosense.gpu import powerd_active, restore_saved_tgp, set_tgp
 from nitrosense.hardware import NITRO_MODES, Hardware
 from nitrosense.i18n import LANG_LABELS, LANGS, lang as ui_lang, save_lang, set_lang, t
@@ -259,11 +267,19 @@ class NitroWindow(Adw.ApplicationWindow):
         self._scen_app_names: list[str] = []
         self.tgp_buttons: dict[str, Gtk.Button] = {}
         self.gpu_unlock_switch = Gtk.Switch()
+        self.cpu_unlock_switch = Gtk.Switch()
         self.gpu_cap_btn: Gtk.Button | None = None
         self._gpu_cap_lab: Gtk.Label | None = None
         self._gpu_cap_status: Gtk.Label | None = None
+        self.cpu_cap_btn: Gtk.Button | None = None
+        self._cpu_cap_lab: Gtk.Label | None = None
+        self._cpu_cap_status: Gtk.Label | None = None
+        self._cpu_cap_icon: ModeIcon | None = None
+        self._gpu_cap_icon: ModeIcon | None = None
         self._tgp_default_w: int | None = None
         self._tgp_max_w: int | None = None
+        self._cpu_default_w: int | None = None
+        self._cpu_max_w: int | None = None
         self._tgp_restore_tried = False
         self._proc_tick = 0
         self._build()
@@ -397,21 +413,40 @@ class NitroWindow(Adw.ApplicationWindow):
         controls.set_margin_bottom(4)
         controls.append(modes)
         controls.append(fans)
-        cap = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4, halign=Gtk.Align.CENTER)
+        caps = Gtk.Box(spacing=12, homogeneous=True, halign=Gtk.Align.CENTER)
+        cpu_col = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        self.cpu_cap_btn = Gtk.Button()
+        self.cpu_cap_btn.add_css_class("mode-tile")
+        cpu_inner = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, halign=Gtk.Align.CENTER)
+        self._cpu_cap_icon = ModeIcon("cpu", size=46)
+        cpu_inner.append(self._cpu_cap_icon)
+        self._cpu_cap_lab = Gtk.Label()
+        self._cpu_cap_lab.add_css_class("ns-tile-label")
+        cpu_inner.append(self._cpu_cap_lab)
+        self.cpu_cap_btn.set_child(cpu_inner)
+        self.cpu_cap_btn.connect("clicked", self._on_cpu_cap_clicked)
+        cpu_col.append(self.cpu_cap_btn)
+        self._cpu_cap_status = Gtk.Label(wrap=True, wrap_mode=Pango.WrapMode.WORD_CHAR)
+        self._cpu_cap_status.add_css_class("muted")
+        cpu_col.append(self._cpu_cap_status)
+        gpu_col = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
         self.gpu_cap_btn = Gtk.Button()
         self.gpu_cap_btn.add_css_class("mode-tile")
         cap_inner = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, halign=Gtk.Align.CENTER)
-        cap_inner.append(ModeIcon("performance", size=46))
+        self._gpu_cap_icon = ModeIcon("performance", size=46)
+        cap_inner.append(self._gpu_cap_icon)
         self._gpu_cap_lab = Gtk.Label()
         self._gpu_cap_lab.add_css_class("ns-tile-label")
         cap_inner.append(self._gpu_cap_lab)
         self.gpu_cap_btn.set_child(cap_inner)
         self.gpu_cap_btn.connect("clicked", self._on_gpu_cap_clicked)
-        cap.append(self.gpu_cap_btn)
-        self._gpu_cap_status = Gtk.Label(wrap=True)
+        gpu_col.append(self.gpu_cap_btn)
+        self._gpu_cap_status = Gtk.Label(wrap=True, wrap_mode=Pango.WrapMode.WORD_CHAR)
         self._gpu_cap_status.add_css_class("muted")
-        cap.append(self._gpu_cap_status)
-        controls.append(cap)
+        gpu_col.append(self._gpu_cap_status)
+        caps.append(cpu_col)
+        caps.append(gpu_col)
+        controls.append(caps)
         controls.append(self.custom_reveal)
 
         page.append(overlay)
@@ -678,6 +713,7 @@ class NitroWindow(Adw.ApplicationWindow):
             self._busy = False
         self._update_scen_now(None)
         self._refresh_tgp_labels()
+        self._refresh_cpu_labels()
 
     def _refresh_usb_labels(self) -> None:
         model = self.usb_drop.get_model()
@@ -774,7 +810,7 @@ class NitroWindow(Adw.ApplicationWindow):
     def _page_resources(self) -> Gtk.Widget:
         self._cpu_hero_box, self._cpu_hero, self._cpu_sub = self._hero()
         self._cpu_facts_grid, self._cpu_facts = self._facts(
-            ("Model", "Threads", "Frequency", "Temperature")
+            ("Model", "Threads", "Frequency", "Temperature", "Power")
         )
         opt = Gtk.Box(spacing=12)
         opt.add_css_class("ns-option-row")
@@ -1070,6 +1106,19 @@ class NitroWindow(Adw.ApplicationWindow):
         self.lang_drop.connect("notify::selected", self._on_language)
         startup.append(self._option_row("set.language", self.lang_drop, "set.language_hint"))
 
+        cpu_pwr = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        cpu_pwr.add_css_class("panel")
+        self._cpu_now = Gtk.Label(xalign=0)
+        self._cpu_now.add_css_class("muted")
+        cpu_pwr.append(self._cpu_now)
+        self.cpu_unlock_switch.connect("state-set", self._on_cpu_unlock_switch)
+        cpu_pwr.append(self._option_row("cpu.cap_switch", self.cpu_unlock_switch, "cpu.cap_hint"))
+        self._cpu_missing = Gtk.Label(wrap=True, xalign=0)
+        self._cpu_missing.add_css_class("muted")
+        self._i18n_bind(self._cpu_missing, "set.cpu_missing")
+        cpu_pwr.append(self._cpu_missing)
+        self._cpu_panel = cpu_pwr
+
         tgp = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
         tgp.add_css_class("panel")
         self._tgp_now = Gtk.Label(xalign=0)
@@ -1082,6 +1131,7 @@ class NitroWindow(Adw.ApplicationWindow):
         self._i18n_bind(self._tgp_missing, "set.tgp_missing")
         tgp.append(self._tgp_missing)
         self._tgp_panel = tgp
+        self._refresh_cpu_labels()
         self._refresh_tgp_labels()
 
         about_lab = Gtk.Label(
@@ -1101,6 +1151,8 @@ class NitroWindow(Adw.ApplicationWindow):
         return self._res_sheet(
             self._res_title("set.driver"),
             driver,
+            self._res_title("set.cpu"),
+            cpu_pwr,
             self._res_title("set.tgp"),
             tgp,
             self._res_title("set.battery"),
@@ -1234,10 +1286,11 @@ class NitroWindow(Adw.ApplicationWindow):
             self._drv_facts["Firmware"].set_text(fw)
             self._drv_facts["Profile"].set_text(snap.profile or "—")
             self._drv_facts["Choices"].set_text(" ".join(snap.profile_choices) or "—")
+        self._sync_cpu()
         self._sync_tgp(sensors)
         if not self._tgp_restore_tried:
             self._tgp_restore_tried = True
-            GLib.idle_add(self._restore_saved_tgp)
+            GLib.idle_add(self._restore_saved_power)
 
     def _set_switch(self, widget: Gtk.Switch, enabled: bool, value: bool | None) -> None:
         widget.set_sensitive(enabled)
@@ -1262,6 +1315,21 @@ class NitroWindow(Adw.ApplicationWindow):
                 self._gpu_cap_lab.set_text(t("gpu.cap_lock", watts=default))
             else:
                 self._gpu_cap_lab.set_text(t("gpu.cap_unlock", watts=boost))
+        if self._gpu_cap_icon is not None:
+            self._gpu_cap_icon.set_active(unlocked)
+
+    def _refresh_cpu_labels(self) -> None:
+        default = self._cpu_default_w or 45
+        boost = self._cpu_max_w or 115
+        info = read_cpu_power()
+        unlocked = cpu_unlocked(info)
+        if self._cpu_cap_lab is not None:
+            if unlocked:
+                self._cpu_cap_lab.set_text(t("cpu.cap_lock", watts=default))
+            else:
+                self._cpu_cap_lab.set_text(t("cpu.cap_unlock", watts=boost))
+        if self._cpu_cap_icon is not None:
+            self._cpu_cap_icon.set_active(unlocked)
 
     def _gpu_unlocked(self, current: int | None, boost: int) -> bool:
         if current is not None and current >= boost - 1:
@@ -1325,6 +1393,54 @@ class NitroWindow(Adw.ApplicationWindow):
         if tray is not None and hasattr(tray, "set_gpu_unlocked"):
             tray.set_gpu_unlocked(unlocked, current)
 
+    def _sync_cpu(self) -> None:
+        info = read_cpu_power()
+        has = info is not None and (info.pl1_w is not None or info.pl2_w is not None)
+        if hasattr(self, "_cpu_missing"):
+            self._cpu_missing.set_visible(not has)
+        if self.cpu_cap_btn is not None:
+            self.cpu_cap_btn.set_sensitive(has)
+            self.cpu_cap_btn.set_visible(has)
+        if self._cpu_cap_status is not None:
+            self._cpu_cap_status.set_visible(has)
+        self.cpu_unlock_switch.set_sensitive(has)
+        if not has:
+            if hasattr(self, "_cpu_now"):
+                self._cpu_now.set_text(
+                    t("set.cpu_now", live="—", default="—", boost="—")
+                )
+            return
+        default = default_pl1(info)
+        boost = boost_pl1(info)
+        current = info.pl1_w
+        self._cpu_default_w = default
+        self._cpu_max_w = boost
+        unlocked = cpu_unlocked(info)
+        self._refresh_cpu_labels()
+        live = self._fmt_w(current)
+        if unlocked:
+            status = t("cpu.cap_on", live=live, boost=boost)
+            if self.cpu_cap_btn is not None:
+                self.cpu_cap_btn.add_css_class("active")
+        else:
+            status = t("cpu.cap_off", live=live)
+            if self.cpu_cap_btn is not None:
+                self.cpu_cap_btn.remove_css_class("active")
+        if hasattr(self, "_cpu_now"):
+            self._cpu_now.set_text(
+                t("set.cpu_now", live=live, default=default, boost=boost)
+            )
+        if self._cpu_cap_status is not None:
+            self._cpu_cap_status.set_text(status)
+        was_busy = self._busy
+        self._busy = True
+        self._set_switch(self.cpu_unlock_switch, has, unlocked)
+        self._busy = was_busy
+        app = self.get_application()
+        tray = getattr(app, "_tray", None) if app is not None else None
+        if tray is not None and hasattr(tray, "set_cpu_unlocked"):
+            tray.set_cpu_unlocked(unlocked, current)
+
     def _apply_gpu_unlock(self, unlock: bool) -> None:
         watts = self._tgp_max_w if unlock else self._tgp_default_w
         if watts is None:
@@ -1345,7 +1461,25 @@ class NitroWindow(Adw.ApplicationWindow):
     def _on_tgp(self, _btn, key: str) -> None:
         self._apply_gpu_unlock(key == "boost")
 
-    def _restore_saved_tgp(self) -> bool:
+    def _apply_cpu_unlock(self, unlock: bool) -> None:
+        self._run(set_cpu_unlock, bool(unlock))
+        self._sync_cpu()
+
+    def _on_cpu_cap_clicked(self, _btn) -> None:
+        info = read_cpu_power()
+        self._apply_cpu_unlock(not cpu_unlocked(info))
+
+    def _on_cpu_unlock_switch(self, _switch: Gtk.Switch, state: bool) -> bool:
+        if self._busy:
+            return False
+        self._apply_cpu_unlock(bool(state))
+        return False
+
+    def _restore_saved_power(self) -> bool:
+        try:
+            restore_saved_cpu()
+        except Exception:  # noqa: BLE001
+            pass
         try:
             restore_saved_tgp()
         except Exception:  # noqa: BLE001
@@ -1965,6 +2099,16 @@ class NitroWindow(Adw.ApplicationWindow):
         self._cpu_facts["Temperature"].set_text(
             f"{sensors.cpu_temp:.0f} °C" if sensors.cpu_temp is not None else "—"
         )
+        cpu_pwr = read_cpu_power()
+        if cpu_pwr is not None and cpu_pwr.pl1_w is not None:
+            if cpu_pwr.pl2_w is not None:
+                self._cpu_facts["Power"].set_text(
+                    f"{cpu_pwr.pl1_w} / {cpu_pwr.pl2_w} W"
+                )
+            else:
+                self._cpu_facts["Power"].set_text(f"{cpu_pwr.pl1_w} W")
+        elif "Power" in self._cpu_facts:
+            self._cpu_facts["Power"].set_text("—")
 
         if sensors.ram_used_gb is not None and sensors.ram_total_gb:
             self._ram_hero.set_text(f"{sensors.ram_pct:.0f}%")
@@ -2229,6 +2373,7 @@ class NitroSenseApplication(Adw.Application):
             on_quit=self._quit_from_tray,
             on_mode=self._mode_from_tray,
             on_gpu_unlock=self._gpu_unlock_from_tray,
+            on_cpu_unlock=self._cpu_unlock_from_tray,
             labels={
                 "tray.show": t("tray.show"),
                 "tray.quit": t("tray.quit"),
@@ -2237,6 +2382,7 @@ class NitroSenseApplication(Adw.Application):
                 "mode.default": t("mode.default"),
                 "mode.performance": t("mode.performance"),
                 "tray.gpu_unlock": t("tray.gpu_unlock"),
+                "tray.cpu_unlock": t("tray.cpu_unlock"),
             },
         )
 
@@ -2277,6 +2423,11 @@ class NitroSenseApplication(Adw.Application):
         self._ensure_window()
         assert self.window is not None
         self.window._apply_gpu_unlock(unlock)
+
+    def _cpu_unlock_from_tray(self, unlock: bool) -> None:
+        self._ensure_window()
+        assert self.window is not None
+        self.window._apply_cpu_unlock(unlock)
 
 
 def main(argv: list[str] | None = None) -> int:
