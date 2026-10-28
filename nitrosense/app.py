@@ -1268,6 +1268,12 @@ class NitroWindow(Adw.ApplicationWindow):
             return True
         return powerd_active()
 
+    @staticmethod
+    def _fmt_w(value: float | int | None) -> str:
+        if value is None:
+            return "—"
+        return str(int(round(value)))
+
     def _sync_tgp(self, sensors: Sensors) -> None:
         gpu = self._nvidia_gpu(sensors)
         has = gpu is not None and (
@@ -1283,26 +1289,31 @@ class NitroWindow(Adw.ApplicationWindow):
         self.gpu_unlock_switch.set_sensitive(has)
         if not has:
             if hasattr(self, "_tgp_now"):
-                self._tgp_now.set_text(t("set.tgp_now", watts="—"))
+                self._tgp_now.set_text(
+                    t("set.tgp_now", live="—", default="—", boost="—")
+                )
             return
         default = int(round(gpu.power_default_w or 60))
         boost = int(round(gpu.power_max_w or 75))
         current = (
-            int(round(gpu.power_limit_w)) if gpu.power_limit_w is not None else default
+            int(round(gpu.power_limit_w)) if gpu.power_limit_w is not None else None
         )
         self._tgp_default_w = default
         self._tgp_max_w = boost
         unlocked = self._gpu_unlocked(current, boost)
         self._refresh_tgp_labels()
+        live = self._fmt_w(current)
         if unlocked:
-            status = t("gpu.cap_on", boost=boost, watts=current)
+            status = t("gpu.cap_on", live=live, boost=boost)
+            detail = t("set.tgp_now", live=live, default=default, boost=boost)
             if self.gpu_cap_btn is not None:
                 self.gpu_cap_btn.add_css_class("active")
         else:
-            status = t("gpu.cap_off", watts=current)
+            status = t("gpu.cap_off", live=live)
+            detail = t("set.tgp_now", live=live, default=default, boost=boost)
             if self.gpu_cap_btn is not None:
                 self.gpu_cap_btn.remove_css_class("active")
-        self._tgp_now.set_text(status)
+        self._tgp_now.set_text(detail)
         if self._gpu_cap_status is not None:
             self._gpu_cap_status.set_text(status)
         was_busy = self._busy
@@ -1312,7 +1323,7 @@ class NitroWindow(Adw.ApplicationWindow):
         app = self.get_application()
         tray = getattr(app, "_tray", None) if app is not None else None
         if tray is not None and hasattr(tray, "set_gpu_unlocked"):
-            tray.set_gpu_unlocked(unlocked)
+            tray.set_gpu_unlocked(unlocked, current)
 
     def _apply_gpu_unlock(self, unlock: bool) -> None:
         watts = self._tgp_max_w if unlock else self._tgp_default_w
@@ -2119,13 +2130,15 @@ class NitroWindow(Adw.ApplicationWindow):
             slot["temp"].update(gpu.temp)
             slot["freq"].update(gpu.freq_mhz)
             if slot["power"] is not None:
-                if gpu.power_w is not None and gpu.power_limit_w is not None:
-                    slot["power"].update(
-                        gpu.power_w,
-                        caption=f"Power  ·  limit {gpu.power_limit_w:.0f} W",
-                    )
+                live = self._fmt_w(gpu.power_limit_w)
+                ceiling = self._fmt_w(gpu.power_max_w)
+                if gpu.power_limit_w is not None and gpu.power_max_w is not None:
+                    caption = t("res.gpu_power_live", live=live, ceiling=ceiling)
+                elif gpu.power_limit_w is not None:
+                    caption = t("res.gpu_power_limit", live=live)
                 else:
-                    slot["power"].update(gpu.power_w)
+                    caption = None
+                slot["power"].update(gpu.power_w, caption=caption)
 
     def _on_proc_filter(self, _entry: Gtk.SearchEntry) -> None:
         self._refresh_proc_list()

@@ -10,6 +10,7 @@ import cairo
 from gi.repository import Gio, GLib
 
 _log = logging.getLogger("nitrosense.tray")
+_KEEP = object()
 
 ROOT = Path(__file__).resolve().parents[1]
 _BUS_NAME = "org.alfred.nitrosense.status"
@@ -162,6 +163,7 @@ class TrayIcon:
         self._labels = labels or {}
         self._mode: str | None = None
         self._gpu_unlocked = False
+        self._gpu_live_w: int | None = None
         self._revision = 1
         self._pixmap = _icon_pixmap(32)
         self._sni_id = 0
@@ -185,11 +187,21 @@ class TrayIcon:
         self._mode = key
         self._emit_mode_props()
 
-    def set_gpu_unlocked(self, unlocked: bool) -> None:
-        if unlocked == self._gpu_unlocked:
+    def set_gpu_unlocked(
+        self, unlocked: bool, live_w: int | None | object = _KEEP
+    ) -> None:
+        watts = self._gpu_live_w if live_w is _KEEP else live_w
+        if unlocked == self._gpu_unlocked and watts == self._gpu_live_w:
             return
         self._gpu_unlocked = unlocked
+        self._gpu_live_w = watts if isinstance(watts, int) else None
         self._emit_mode_props()
+
+    def _gpu_unlock_label(self) -> str:
+        base = self._L("tray.gpu_unlock", "Unlock GPU")
+        if self._gpu_live_w is None:
+            return base
+        return f"{base}  ·  {self._gpu_live_w} W"
 
     def _on_bus(self, conn: Gio.DBusConnection, _name: str) -> None:
         self._conn = conn
@@ -357,7 +369,7 @@ class TrayIcon:
             self._item(13, type="separator", visible=True),
             self._check(
                 20,
-                self._L("tray.gpu_unlock", "Unlock GPU"),
+                self._gpu_unlock_label(),
                 self._gpu_unlocked,
                 icon_name="input-gaming-symbolic",
             ),

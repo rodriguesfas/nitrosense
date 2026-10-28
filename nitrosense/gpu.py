@@ -20,14 +20,106 @@ class TgpInfo:
     max_w: int | None = None
 
 
+@dataclass
+class PowerReadings:
+    """Live watts from `nvidia-smi -q -d POWER` (GPU Power Readings)."""
+
+    draw_w: float | None = None
+    current_w: float | None = None
+    default_w: float | None = None
+    min_w: float | None = None
+    max_w: float | None = None
+
+
+_POWER_FIELDS = (
+    ("Instantaneous Power Draw", "draw_w"),
+    ("Current Power Limit", "current_w"),
+    ("Default Power Limit", "default_w"),
+    ("Min Power Limit", "min_w"),
+    ("Max Power Limit", "max_w"),
+)
+_POWER_END = ("GPU Memory Power Readings", "Module Power Readings", "Power Smoothing")
+
+
 def _f(raw: str) -> float | None:
     raw = raw.strip().replace("[N/A]", "").replace("W", "")
-    if not raw or "deprecated" in raw.lower():
+    if not raw or "deprecated" in raw.lower() or raw.upper() == "N/A":
+        return None
+    if raw.lower() == "not found":
         return None
     try:
         return float(raw)
     except ValueError:
         return None
+
+
+def _round_w(value: float | None) -> int | None:
+    return int(round(value)) if value is not None else None
+
+
+def parse_smi_power_readings(text: str) -> PowerReadings | None:
+    """First GPU Power Readings block. CSV power.limit is [N/A] on 595-open."""
+    start = text.find("GPU Power Readings")
+    if start < 0:
+        return None
+    rest = text[start:]
+    end = len(rest)
+    for marker in _POWER_END:
+        at = rest.find(marker, 20)
+        if at > 0:
+            end = min(end, at)
+    block = rest[:end]
+    found = False
+    readings = PowerReadings()
+    for line in block.splitlines():
+        if ":" not in line:
+            continue
+        label, raw = line.split(":", 1)
+        label = " ".join(label.split())
+        for prefix, field in _POWER_FIELDS:
+            if label == prefix:
+                setattr(readings, field, _f(raw))
+                found = True
+                break
+    if not found:
+        return None
+    if (
+        readings.current_w is None
+        and readings.default_w is None
+        and readings.max_w is None
+    ):
+        return None
+    return readings
+
+
+def smi_power_readings() -> PowerReadings | None:
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "-q", "-d", "POWER"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=1.5,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0 or not result.stdout.strip():
+        return None
+    return parse_smi_power_readings(result.stdout)
+
+
+def _overlay_power(info: TgpInfo, readings: PowerReadings | None) -> TgpInfo:
+    if readings is None:
+        return info
+    if readings.current_w is not None:
+        info.current_w = _round_w(readings.current_w)
+    if info.default_w is None:
+        info.default_w = _round_w(readings.default_w)
+    if info.min_w is None:
+        info.min_w = _round_w(readings.min_w)
+    if info.max_w is None:
+        info.max_w = _round_w(readings.max_w)
+    return info
 
 
 def saved_tgp() -> int | None:
@@ -83,15 +175,18 @@ def read_tgp() -> TgpInfo | None:
     default = _f(parts[2]) if len(parts) > 2 else None
     minimum = _f(parts[3]) if len(parts) > 3 else None
     maximum = _f(parts[4]) if len(parts) > 4 else None
+    readings = smi_power_readings()
     if default is None and maximum is None:
-        return None
-    return TgpInfo(
+        if readings is None or (readings.default_w is None and readings.max_w is None):
+            return None
+    info = TgpInfo(
         name=parts[0] or None,
-        current_w=int(round(cur)) if cur is not None else None,
-        default_w=int(round(default)) if default is not None else None,
-        min_w=int(round(minimum)) if minimum is not None else None,
-        max_w=int(round(maximum)) if maximum is not None else None,
+        current_w=_round_w(cur),
+        default_w=_round_w(default),
+        min_w=_round_w(minimum),
+        max_w=_round_w(maximum),
     )
+    return _overlay_power(info, readings)
 
 
 def set_tgp(watts: int, *, persist: bool = True) -> None:
