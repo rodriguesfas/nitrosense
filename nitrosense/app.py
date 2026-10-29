@@ -39,7 +39,16 @@ from nitrosense.drivers import probe as probe_drivers, summary_line as drivers_s
 from nitrosense.gpu import powerd_active, restore_saved_tgp, set_tgp
 from nitrosense.hardware import NITRO_MODES, Hardware, MissingDriverError
 from nitrosense.history import depth as undo_depth, undo as undo_profile
-from nitrosense.i18n import LANG_LABELS, LANGS, lang as ui_lang, save_lang, set_lang, t
+from nitrosense.i18n import (
+    LANG_LABELS,
+    LANGS,
+    lang as ui_lang,
+    load_ui,
+    save_lang,
+    save_ui,
+    set_lang,
+    t,
+)
 from nitrosense.lighting import (
     NIGHT_TEMP_MAX,
     NIGHT_TEMP_MIN,
@@ -1646,8 +1655,16 @@ class NitroWindow(Adw.ApplicationWindow):
         return False
 
     def _restore_saved_power(self) -> bool:
-        # Login: only RAPL / Dynamic Boost (autostart). Full profiles are
-        # explicit from ENGINEER or post-resume safe restore.
+        # Re-apply last Acer mode + RAPL / Dynamic Boost, then force the tray
+        # marks to match (AppIndicator often caches the empty defaults).
+        saved = load_ui()
+        mode = str(saved.get("acer_mode") or "")
+        if mode in {m[0] for m in NITRO_MODES}:
+            fw = next(item[2] for item in NITRO_MODES if item[0] == mode)
+            try:
+                self.hw.set_profile(fw)
+            except Exception:  # noqa: BLE001
+                pass
         try:
             restore_saved_cpu()
         except Exception:  # noqa: BLE001
@@ -1656,6 +1673,30 @@ class NitroWindow(Adw.ApplicationWindow):
             restore_saved_tgp()
         except Exception:  # noqa: BLE001
             pass
+        self.hw.refresh_paths()
+        snap = self.hw.snapshot()
+        current_mode = None
+        for key, _label, fw in NITRO_MODES:
+            if snap.profile == fw:
+                current_mode = key
+                break
+        if current_mode is None and mode in {m[0] for m in NITRO_MODES}:
+            current_mode = mode
+        self._set_active_map(self.mode_buttons, current_mode)
+        self._set_active_map(self.scen_mode_buttons, current_mode)
+        self._sync_tray_mode(current_mode)
+        self._sync_cpu()
+        try:
+            self._sync_tgp(read_sensors())
+        except Exception:  # noqa: BLE001
+            app = self.get_application()
+            tray = getattr(app, "_tray", None) if app is not None else None
+            if tray is not None and hasattr(tray, "set_gpu_unlocked"):
+                tray.set_gpu_unlocked(powerd_active())
+        app = self.get_application()
+        tray = getattr(app, "_tray", None) if app is not None else None
+        if tray is not None and hasattr(tray, "refresh"):
+            tray.refresh()
         self._refresh_engineer_status()
         return False
 
@@ -2087,6 +2128,10 @@ class NitroWindow(Adw.ApplicationWindow):
         self._set_active_map(self.mode_buttons, key)
         self._set_active_map(self.scen_mode_buttons, key)
         self._sync_tray_mode(key)
+        try:
+            save_ui(acer_mode=key)
+        except OSError:
+            pass
         self._run(self.hw.set_profile, fw)
 
     def _sync_tray_mode(self, key: str | None) -> None:

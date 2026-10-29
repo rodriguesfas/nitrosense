@@ -172,6 +172,9 @@ class TrayIcon:
         self._pixmap = _icon_pixmap(32)
         self._sni_id = 0
         self._menu_id = 0
+        # True after ItemsPropertiesUpdated reached the shell at least once
+        # with the current values (survives set_* early-return races).
+        self._menu_pushed = False
         self._conn: Gio.DBusConnection | None = None
         self._own = Gio.bus_own_name(
             Gio.BusType.SESSION,
@@ -186,20 +189,24 @@ class TrayIcon:
         return self._labels.get(key) or fallback
 
     def set_mode(self, key: str | None) -> None:
-        if key == self._mode:
+        if key == self._mode and self._menu_pushed:
             return
         self._mode = key
-        self._emit_mode_props()
+        self._push_menu()
 
     def set_gpu_unlocked(
         self, unlocked: bool, live_w: int | None | object = _KEEP
     ) -> None:
         watts = self._gpu_live_w if live_w is _KEEP else live_w
-        if unlocked == self._gpu_unlocked and watts == self._gpu_live_w:
+        if (
+            unlocked == self._gpu_unlocked
+            and watts == self._gpu_live_w
+            and self._menu_pushed
+        ):
             return
         self._gpu_unlocked = unlocked
         self._gpu_live_w = watts if isinstance(watts, int) else None
-        self._emit_mode_props()
+        self._push_menu()
 
     def _gpu_unlock_label(self) -> str:
         base = self._L("tray.gpu_unlock", "Unlock GPU")
@@ -211,17 +218,32 @@ class TrayIcon:
         self, unlocked: bool, live_w: int | None | object = _KEEP
     ) -> None:
         watts = self._cpu_live_w if live_w is _KEEP else live_w
-        if unlocked == self._cpu_unlocked and watts == self._cpu_live_w:
+        if (
+            unlocked == self._cpu_unlocked
+            and watts == self._cpu_live_w
+            and self._menu_pushed
+        ):
             return
         self._cpu_unlocked = unlocked
         self._cpu_live_w = watts if isinstance(watts, int) else None
-        self._emit_mode_props()
+        self._push_menu()
 
     def _cpu_unlock_label(self) -> str:
         base = self._L("tray.cpu_unlock", "Unlock CPU")
         if self._cpu_live_w is None:
             return base
         return f"{base}  ·  {self._cpu_live_w} W"
+
+    def refresh(self) -> None:
+        """Force the shell to refetch radio/check marks (call after restore)."""
+        self._menu_pushed = False
+        self._push_menu()
+
+    def _push_menu(self) -> None:
+        if self._conn is None:
+            return
+        self._emit_mode_props()
+        self._menu_pushed = True
 
     def _on_bus(self, conn: Gio.DBusConnection, _name: str) -> None:
         self._conn = conn
@@ -242,6 +264,14 @@ class TrayIcon:
             None,
         )
         self._register_watcher()
+        # State may already be set from the first window tick before the bus
+        # was ready — push it now so the shell is not stuck on defaults.
+        self._menu_pushed = False
+        GLib.idle_add(self._push_menu_idle)
+
+    def _push_menu_idle(self) -> bool:
+        self._push_menu()
+        return False
 
     def _register_watcher(self) -> None:
         if self._conn is None:
