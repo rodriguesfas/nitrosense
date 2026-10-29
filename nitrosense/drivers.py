@@ -65,9 +65,21 @@ def _smi_ok() -> bool:
     return result.returncode == 0 and "GPU" in (result.stdout or "")
 
 
+def _pending_kernel_notice() -> list[str]:
+    notice = Path("/var/lib/nitrosense/needs-modules")
+    if not notice.is_file():
+        return []
+    try:
+        text = notice.read_text(encoding="utf-8")
+    except OSError:
+        return []
+    return [f"postinst: {line.strip()}" for line in text.splitlines() if line.strip()]
+
+
 def probe() -> DriverHealth:
     kver = os.uname().release
     notes: list[str] = []
+    notes.extend(_pending_kernel_notice())
     linuwu_ko = _ko_exists("linuwu_sense")
     linuwu_loaded = Path("/sys/module/linuwu_sense").exists() or _module_loaded(
         "linuwu_sense"

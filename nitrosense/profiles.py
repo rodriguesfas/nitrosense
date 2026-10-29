@@ -11,6 +11,7 @@ from nitrosense.audit import record
 from nitrosense.cpu import read_cpu_power, set_pl1
 from nitrosense.gpu import powerd_active, set_tgp
 from nitrosense.hardware import NITRO_MODES, Hardware
+from nitrosense.history import capture as capture_snapshot, push as push_undo
 from nitrosense.tuning import read_tuning, set_epp, set_governor, set_ppd
 
 STATE_PATH = Path.home() / ".config" / "nitrosense" / "profile_state.json"
@@ -155,10 +156,20 @@ def _save_state(profile_id: str, result: ApplyResult) -> None:
     STATE_PATH.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
 
-def apply_profile(profile_id: str, hw: Hardware | None = None) -> ApplyResult:
+def apply_profile(
+    profile_id: str,
+    hw: Hardware | None = None,
+    *,
+    record_undo: bool = True,
+) -> ApplyResult:
     profile = get_profile(profile_id)
     hw = hw or Hardware()
     hw.refresh_paths()
+    if record_undo:
+        try:
+            push_undo(capture_snapshot(hw, profile_id=saved_profile_id()))
+        except Exception:  # noqa: BLE001
+            pass
     result = ApplyResult(profile_id=profile_id)
     fw = next(item[2] for item in NITRO_MODES if item[0] == profile.mode)
 

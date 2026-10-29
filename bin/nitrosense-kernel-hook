@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# Called from /etc/kernel/postinst.d after a kernel package is installed.
+# Never reboots. Tries to flag missing Linuwu/NVIDIA modules for the new kver.
+set -euo pipefail
+
+KVER="${1:-$(uname -r)}"
+STATE_DIR=/var/lib/nitrosense
+NOTICE="$STATE_DIR/needs-modules"
+mkdir -p "$STATE_DIR"
+
+linuwu_ko="/lib/modules/${KVER}/kernel/drivers/platform/x86/linuwu_sense.ko"
+nvidia_ko=""
+if [[ -e /lib/modules/${KVER}/kernel/nvidia-595-open/nvidia.ko ]]; then
+  nvidia_ko=/lib/modules/${KVER}/kernel/nvidia-595-open/nvidia.ko
+elif compgen -G "/lib/modules/${KVER}/**/nvidia.ko*" >/dev/null 2>&1; then
+  nvidia_ko=$(compgen -G "/lib/modules/${KVER}/**/nvidia.ko*" | head -1)
+fi
+
+missing=()
+[[ -e "$linuwu_ko" || -e "${linuwu_ko}.zst" ]] || missing+=("linuwu_sense")
+[[ -n "$nvidia_ko" ]] || missing+=("nvidia")
+
+if ((${#missing[@]})); then
+  {
+    echo "kernel=${KVER}"
+    echo "missing=${missing[*]}"
+    echo "ts=$(date -Iseconds)"
+    echo "hint_linuwu=nitrosense-setup or SETTINGS → Install Linuwu driver"
+    echo "hint_nvidia=sudo apt install linux-modules-nvidia-595-open-${KVER}"
+  } > "$NOTICE"
+  echo "nitrosense-kernel-hook: missing ${missing[*]} for ${KVER}" >&2
+else
+  rm -f "$NOTICE"
+  echo "nitrosense-kernel-hook: modules OK for ${KVER}"
+fi
+
+# If the hook runs for the *running* kernel, try a non-disruptive modprobe.
+if [[ "$KVER" == "$(uname -r)" ]]; then
+  modprobe linuwu_sense 2>/dev/null || true
+  modprobe nvidia 2>/dev/null || true
+  modprobe nvidia_uvm 2>/dev/null || true
+fi
+
+exit 0
