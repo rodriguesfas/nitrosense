@@ -1,17 +1,3 @@
 #!/usr/bin/env bash
-# Restore the last NVIDIA TGP from ~/.config/nitrosense/ui.json (silent at login).
-set -euo pipefail
-HERE="$(cd "$(dirname "$0")" && pwd)"
-if [[ -d "$HERE/../nitrosense" ]]; then
-  ROOT="$(cd "$HERE/.." && pwd)"
-elif [[ -d /usr/share/nitrosense/nitrosense ]]; then
-  ROOT=/usr/share/nitrosense
-else
-  echo "nitrosense: application files not found" >&2
-  exit 1
-fi
-export PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}"
-rc=0
-python3 -m nitrosense.gpu "$@" || rc=$?
-python3 -m nitrosense.cpu "$@" || rc=$?
-exit "$rc"
+# Back-compat login restore entry (CPU RAPL + GPU TGP + last profile).
+exec "$(cd "$(dirname "$0")" && pwd)/nitrosense-restore" auto

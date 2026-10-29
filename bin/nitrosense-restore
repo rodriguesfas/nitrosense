@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# Restore power limits and the last (or safe) performance profile after login / resume.
+set -euo pipefail
+HERE="$(cd "$(dirname "$0")" && pwd)"
+if [[ -d "$HERE/../nitrosense" ]]; then
+  ROOT="$(cd "$HERE/.." && pwd)"
+elif [[ -d /usr/share/nitrosense/nitrosense ]]; then
+  ROOT=/usr/share/nitrosense
+else
+  echo "nitrosense: application files not found" >&2
+  exit 1
+fi
+export PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}"
+MODE="${1:-auto}"
+rc=0
+case "$MODE" in
+  safe)
+    python3 -c 'from nitrosense.profiles import restore_safe; restore_safe()' || rc=$?
+    ;;
+  auto|*)
+    python3 - <<'PY' || rc=$?
+from nitrosense.cpu import restore_saved_cpu
+from nitrosense.gpu import restore_saved_tgp
+from nitrosense.profiles import saved_profile_id, apply_profile, restore_safe
+
+try:
+    restore_saved_cpu()
+except Exception:
+    pass
+try:
+    restore_saved_tgp()
+except Exception:
+    pass
+pid = saved_profile_id()
+try:
+    if pid and pid != "safe":
+        apply_profile(pid)
+    else:
+        restore_safe()
+except Exception:
+    try:
+        restore_safe()
+    except Exception:
+        raise SystemExit(1)
+PY
+    ;;
+esac
+exit "$rc"

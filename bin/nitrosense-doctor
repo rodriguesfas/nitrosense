@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Print Linuwu / NVIDIA health for the running kernel (no reboot).
+set -euo pipefail
+HERE="$(cd "$(dirname "$0")" && pwd)"
+if [[ -d "$HERE/../nitrosense" ]]; then
+  ROOT="$(cd "$HERE/.." && pwd)"
+elif [[ -d /usr/share/nitrosense/nitrosense ]]; then
+  ROOT=/usr/share/nitrosense
+else
+  echo "nitrosense: application files not found" >&2
+  exit 1
+fi
+export PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}"
+python3 - <<'PY'
+from nitrosense.drivers import probe, summary_line
+
+h = probe()
+print(summary_line(h))
+print(f"  linuwu_ko={h.linuwu_ko} loaded={h.linuwu_loaded} platform_profile={h.platform_profile}")
+print(f"  nvidia_ko={h.nvidia_ko} loaded={h.nvidia_loaded} smi={h.nvidia_smi_ok}")
+for note in h.notes:
+    print(f"  ! {note}")
+raise SystemExit(0 if h.linuwu_loaded and h.platform_profile and h.nvidia_smi_ok else 1)
+PY

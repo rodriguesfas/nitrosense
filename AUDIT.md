@@ -32,5 +32,12 @@ Reference: Nitro V 15 manual (Home, Scenario, Fan Auto/Max/Custom, Monitoring 30
 | NPU | — | **hidden unless the kernel exposes one** |
 | WMI driver (real fans/modes) | Linuwu Sense | **`linuwu_sense` module** |
 | Top-bar / tray icon | StatusNotifierItem (Ubuntu AppIndicators); radio marks Quiet/Default/Performance | **yes** |
+| Named performance profiles | ENGINEER — Eco/Daily/Compile/AI/Sustained/Safe with verify | **yes (0.4.0)** |
+| Governor / EPP / PPD | helper `governor`/`epp` + `powerprofilesctl` | **yes** |
+| Post-resume safe restore | login1 PrepareForSleep → Safe profile | **yes** |
+| Driver doctor | `nitrosense-doctor` (Linuwu + NVIDIA for current kernel) | **yes** |
+| Stability harness | ENGINEER 60s CPU/GPU/combined + abort→Safe | **yes (opt-in)** |
+| Audit log | `~/.config/nitrosense/audit.jsonl` | **yes** |
+| CPU/GPU clock overclock / undervolt | — | **no (firmware-locked on ANV15-51)** |
 
 Look: black + orange HUD, rings, Quiet/Default/Performance, Auto/Max/Custom — aligned with Windows. No Acer 3D assets.

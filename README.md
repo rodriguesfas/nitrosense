@@ -50,6 +50,11 @@ nitrosense-setup           # Linuwu driver (fans, profile, battery) — asks for
 
 The `.deb` ships the app. The kernel module is **not** in the package (it depends on
 your kernel). After the driver, log out and back in (`linuwu_sense` group).
+After a kernel upgrade, Quiet/Default/Performance stop working until you run
+`nitrosense-setup` (or SETTINGS → Install Linuwu driver) again for that kernel.
+Install matching `linux-modules-nvidia-*-$(uname -r)` as well; `nitrosense-doctor`
+checks Linuwu + NVIDIA without a reboot. The ENGINEER tab applies named profiles
+(Eco / Daily / Compile / AI / Sustained / Safe) and short opt-in stability tests.
 
 ## Run from source
 

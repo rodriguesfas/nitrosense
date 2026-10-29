@@ -98,6 +98,8 @@ sudo "$ROOT/bin/nitrosense-fixperms" || true
 
 POLICY_DST=/usr/share/polkit-1/actions/org.alfred.nitrosense.policy
 sudo install -m 0755 "$ROOT/bin/nitrosense-helper" /usr/libexec/nitrosense-helper
+sudo install -m 0755 "$ROOT/bin/nitrosense-restore" /usr/local/bin/nitrosense-restore
+sudo install -m 0755 "$ROOT/bin/nitrosense-doctor" /usr/local/bin/nitrosense-doctor
 HELPER_FOR_POLICY=/usr/libexec/nitrosense-helper
 sed "s|@HELPER@|$HELPER_FOR_POLICY|g" \
   "$ROOT/data/org.alfred.nitrosense.policy.in" | sudo tee "$POLICY_DST" >/dev/null
