@@ -37,6 +37,21 @@ CPU_MIN = 15
 CPU_MAX = 999
 EPP_UNLOCK = "performance"
 EPP_CAP = "balance_performance"
+EPP_ALLOWED = (
+    "default",
+    "performance",
+    "balance_performance",
+    "balance_power",
+    "power",
+)
+GOV_ALLOWED = (
+    "conservative",
+    "ondemand",
+    "userspace",
+    "powersave",
+    "performance",
+    "schedutil",
+)
 POWERD_UNIT = Path("/etc/systemd/system/nvidia-powerd.service")
 POWERD_DBUS = Path("/etc/dbus-1/system.d/nvidia-powerd.conf")
 POWERD_LOG = Path("/var/log/nvtopps")
@@ -149,6 +164,36 @@ def _set_epp(value: str) -> None:
             continue
 
 
+def _set_governor(value: str) -> None:
+    root = Path("/sys/devices/system/cpu")
+    for cpu in sorted(root.glob("cpu[0-9]*")):
+        gov = cpu / "cpufreq" / "scaling_governor"
+        if not gov.is_file():
+            continue
+        try:
+            gov.write_text(value + "\n", encoding="utf-8")
+        except OSError:
+            continue
+
+
+def _epp_cmd(raw: str) -> int:
+    value = raw.strip()
+    if value not in EPP_ALLOWED:
+        print("EPP not allowed", file=sys.stderr)
+        return 2
+    _set_epp(value)
+    return 0
+
+
+def _governor_cmd(raw: str) -> int:
+    value = raw.strip()
+    if value not in GOV_ALLOWED:
+        print("governor not allowed", file=sys.stderr)
+        return 2
+    _set_governor(value)
+    return 0
+
+
 def _cpu(raw: str) -> int:
     try:
         watts = int(raw)
@@ -254,10 +299,15 @@ def main(argv: list[str]) -> int:
         return _tgp(argv[2])
     if len(argv) == 3 and argv[1] == "cpu":
         return _cpu(argv[2])
+    if len(argv) == 3 and argv[1] == "epp":
+        return _epp_cmd(argv[2])
+    if len(argv) == 3 and argv[1] == "governor":
+        return _governor_cmd(argv[2])
     if len(argv) == 4 and argv[1] == "write":
         return _write(Path(argv[2]), argv[3])
     print(
-        "usage: nitrosense-helper write <path> <value> | tgp <watts> | cpu <watts>",
+        "usage: nitrosense-helper write <path> <value> | tgp <watts> | "
+        "cpu <watts> | epp <value> | governor <value>",
         file=sys.stderr,
     )
     return 2
