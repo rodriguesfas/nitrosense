@@ -1,0 +1,4 @@
+#!/bin/sh
+# Installed as /etc/kernel/postinst.d/nitrosense
+set -e
+@HOOK@ "$@" || true

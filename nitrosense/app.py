@@ -20,7 +20,13 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Adw, Gdk, GLib, Gtk, Pango
 
-from nitrosense.bench import BenchRunner
+from nitrosense.bench import (
+    DURATION_PRESETS,
+    BenchRunner,
+    best_for_kind,
+    compare_results,
+    recent_results,
+)
 from nitrosense.cpu import (
     boost_pl1,
     cpu_unlocked,
@@ -32,6 +38,7 @@ from nitrosense.cpu import (
 from nitrosense.drivers import probe as probe_drivers, summary_line as drivers_summary
 from nitrosense.gpu import powerd_active, restore_saved_tgp, set_tgp
 from nitrosense.hardware import NITRO_MODES, Hardware, MissingDriverError
+from nitrosense.history import depth as undo_depth, undo as undo_profile
 from nitrosense.i18n import LANG_LABELS, LANGS, lang as ui_lang, save_lang, set_lang, t
 from nitrosense.lighting import (
     NIGHT_TEMP_MAX,
@@ -300,6 +307,12 @@ class NitroWindow(Adw.ApplicationWindow):
         self._eng_drivers = Gtk.Label(wrap=True, xalign=0)
         self._eng_throttle = Gtk.Label(wrap=True, xalign=0)
         self._eng_bench_status = Gtk.Label(wrap=True, xalign=0)
+        self._eng_history = Gtk.Label(wrap=True, xalign=0)
+        self._bench_duration_s = 60
+        self._bench_dur_drop = Gtk.DropDown(
+            model=Gtk.StringList.new([label for label, _ in DURATION_PRESETS])
+        )
+        self._bench_dur_drop.set_selected(0)
         self._build()
         watch_prepare_for_sleep(self._on_prepare_for_sleep)
         GLib.timeout_add(1000, self._tick)
@@ -1127,30 +1140,59 @@ class NitroWindow(Adw.ApplicationWindow):
         hint.add_css_class("muted")
         self._i18n_bind(hint, "eng.bench_hint")
         bench.append(hint)
-        row = Gtk.Box(spacing=8)
+        dur_row = Gtk.Box(spacing=8)
+        dur_lab = Gtk.Label()
+        self._i18n_bind(dur_lab, "eng.bench_duration")
+        self._bench_dur_drop.connect("notify::selected", self._on_bench_duration)
+        dur_row.append(dur_lab)
+        dur_row.append(self._bench_dur_drop)
+        bench.append(dur_row)
+        row = Gtk.Box(spacing=6)
+        row.set_homogeneous(True)
         for key, kind in (
             ("eng.bench_cpu", "cpu"),
             ("eng.bench_gpu", "gpu"),
             ("eng.bench_combined", "combined"),
+            ("eng.bench_memory", "memory"),
+            ("eng.bench_compile", "compile"),
+            ("eng.bench_ai", "ai"),
+            ("eng.bench_vram", "vram"),
+            ("eng.bench_sustained", "sustained"),
         ):
             b = Gtk.Button()
             self._i18n_bind(b, key)
             b.connect("clicked", self._on_bench, kind)
             row.append(b)
+        bench.append(row)
+        abort_row = Gtk.Box(spacing=8)
         abort = Gtk.Button()
         self._i18n_bind(abort, "eng.bench_abort")
         abort.connect("clicked", self._on_bench_abort)
-        row.append(abort)
-        bench.append(row)
+        abort_row.append(abort)
+        bench.append(abort_row)
         self._eng_bench_status.add_css_class("muted")
         self._eng_bench_status.set_text("—")
         bench.append(self._eng_bench_status)
+
+        history_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        history_box.add_css_class("panel")
+        self._eng_history.add_css_class("muted")
+        history_box.append(self._eng_history)
+        hist_btn = Gtk.Button()
+        self._i18n_bind(hist_btn, "eng.history_refresh")
+        hist_btn.set_halign(Gtk.Align.START)
+        hist_btn.connect("clicked", lambda *_: self._refresh_bench_history())
+        history_box.append(hist_btn)
 
         actions = Gtk.Box(spacing=8)
         safe_btn = Gtk.Button()
         self._i18n_bind(safe_btn, "eng.safe")
         safe_btn.connect("clicked", self._on_profile, "safe")
         actions.append(safe_btn)
+        undo_btn = Gtk.Button()
+        self._i18n_bind(undo_btn, "eng.undo")
+        undo_btn.connect("clicked", self._on_undo)
+        actions.append(undo_btn)
         audit = Gtk.Label(wrap=True, xalign=0)
         audit.add_css_class("muted")
         self._i18n_bind(audit, "eng.audit")
@@ -1180,10 +1222,13 @@ class NitroWindow(Adw.ApplicationWindow):
             throttle_box,
             self._res_title("eng.bench"),
             bench,
+            self._res_title("eng.history"),
+            history_box,
             audit,
             legend,
         )
         self._refresh_engineer_status()
+        self._refresh_bench_history()
         return page
 
     def _page_settings(self) -> Gtk.Widget:
@@ -1688,28 +1733,48 @@ class NitroWindow(Adw.ApplicationWindow):
             else:
                 btn.remove_css_class("active")
 
+    def _on_bench_duration(self, drop: Gtk.DropDown, _pspec=None) -> None:
+        idx = int(drop.get_selected())
+        if 0 <= idx < len(DURATION_PRESETS):
+            self._bench_duration_s = DURATION_PRESETS[idx][1]
+
     def _on_bench(self, _btn, kind: str) -> None:
         if self._bench.running:
             self._toast("bench already running")
             return
-        self._eng_bench_status.set_text(f"starting {kind}…")
+        duration = int(getattr(self, "_bench_duration_s", 60) or 60)
+        if kind == "sustained" and duration < 300:
+            duration = 300
+            self._toast(t("eng.bench_sustained_min"))
+        self._eng_bench_status.set_text(f"starting {kind} {duration}s…")
 
         def progress(msg: str) -> None:
             GLib.idle_add(self._eng_bench_status.set_text, msg)
 
         def work() -> None:
             try:
-                result = self._bench.run(kind, 60, on_progress=progress)
+                result = self._bench.run(
+                    kind,
+                    duration,
+                    on_progress=progress,
+                    profile_id=saved_profile_id(),
+                )
             except Exception as exc:  # noqa: BLE001
                 GLib.idle_add(self._eng_bench_status.set_text, str(exc))
                 return
+            metric = ""
+            if result.metric is not None and result.metric_value is not None:
+                metric = f" · {result.metric}={result.metric_value}"
             text = (
                 f"{result.kind} {result.duration_s}s · "
                 f"{'PASS' if result.ok else 'FAIL'} · "
-                f"max°C={result.max_temp_c} · throttle={result.throttle_hits}"
+                f"max°C={result.max_temp_c} avg°C={result.avg_temp_c} · "
+                f"throttle={result.throttle_hits}"
+                + metric
                 + (f" · {result.reason}" if result.reason else "")
             )
             GLib.idle_add(self._eng_bench_status.set_text, text)
+            GLib.idle_add(self._refresh_bench_history)
 
         threading.Thread(target=work, daemon=True).start()
 
@@ -1717,6 +1782,64 @@ class NitroWindow(Adw.ApplicationWindow):
         self._bench.abort(restore=True)
         self._eng_bench_status.set_text("aborted → safe profile")
         self._refresh_engineer_status()
+
+    def _on_undo(self, _btn) -> None:
+        if undo_depth() <= 0:
+            self._toast(t("eng.undo_empty"))
+            return
+
+        def work() -> None:
+            try:
+                snap = undo_profile(self.hw)
+            except Exception as exc:  # noqa: BLE001
+                GLib.idle_add(self._toast, str(exc))
+                return
+            msg = t("eng.undo_done") if snap else t("eng.undo_empty")
+            GLib.idle_add(self._toast, msg)
+            GLib.idle_add(self._refresh_engineer_status)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _refresh_bench_history(self) -> None:
+        if not hasattr(self, "_eng_history"):
+            return
+        rows = recent_results(12)
+        if not rows:
+            self._eng_history.set_text(t("eng.history_empty"))
+            return
+        lines = [t("eng.history_head")]
+        for row in reversed(rows[-8:]):
+            mark = "PASS" if row.get("ok") else "FAIL"
+            metric = ""
+            if row.get("metric") is not None:
+                metric = f" · {row.get('metric')}={row.get('metric_value')}"
+            lines.append(
+                f"{row.get('ts','?')}  {row.get('kind')}  {mark}  "
+                f"{row.get('duration_s')}s  max°C={row.get('max_temp_c')}  "
+                f"thr={row.get('throttle_hits')}  "
+                f"profile={row.get('profile_id') or '—'}{metric}"
+            )
+        if len(rows) >= 2:
+            cmp_ = compare_results(rows[-1], rows[-2])
+            lines.append(
+                t(
+                    "eng.history_cmp",
+                    kind_ok=str(cmp_["kind_match"]),
+                    temp=cmp_["max_temp_delta"],
+                    metric=cmp_["metric_delta"],
+                    thr=cmp_["throttle_delta"],
+                )
+            )
+        best_ai = best_for_kind("ai")
+        if best_ai and best_ai.get("metric_value") is not None:
+            lines.append(
+                t(
+                    "eng.history_best_ai",
+                    rate=best_ai["metric_value"],
+                    profile=best_ai.get("profile_id") or "—",
+                )
+            )
+        self._eng_history.set_text("\n".join(lines))
 
     def _run(self, fn, *args) -> None:
         try:

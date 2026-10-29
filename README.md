@@ -53,8 +53,10 @@ your kernel). After the driver, log out and back in (`linuwu_sense` group).
 After a kernel upgrade, Quiet/Default/Performance stop working until you run
 `nitrosense-setup` (or SETTINGS → Install Linuwu driver) again for that kernel.
 Install matching `linux-modules-nvidia-*-$(uname -r)` as well; `nitrosense-doctor`
-checks Linuwu + NVIDIA without a reboot. The ENGINEER tab applies named profiles
-(Eco / Daily / Compile / AI / Sustained / Safe) and short opt-in stability tests.
+checks Linuwu + NVIDIA without a reboot. A kernel `postinst.d` hook records missing
+modules (never reboots). The ENGINEER tab applies named profiles, undo, and opt-in
+benches (CPU/GPU/RAM/compile/local AI/VRAM/sustained) from 1 minute to 4 hours with
+history comparison and abort → Safe.
 
 ## Run from source
 
