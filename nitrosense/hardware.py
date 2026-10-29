@@ -30,6 +30,27 @@ HELPER_CANDIDATES = (
 )
 
 
+class MissingDriverError(RuntimeError):
+    """platform_profile / fan sysfs gone — usually after a kernel update."""
+
+    def __init__(self, kernel: str | None = None) -> None:
+        self.kernel = kernel or os.uname().release
+        ko = Path(
+            f"/lib/modules/{self.kernel}/kernel/drivers/platform/x86/linuwu_sense.ko"
+        )
+        self.module_built = ko.is_file()
+        if self.module_built:
+            msg = (
+                f"Linuwu Sense is not loaded on kernel {self.kernel} "
+                "(no platform_profile)."
+            )
+        else:
+            msg = (
+                f"Linuwu Sense is not built for kernel {self.kernel}."
+            )
+        super().__init__(msg)
+
+
 def _read(path: Path) -> str | None:
     try:
         return path.read_text(encoding="utf-8").strip()
@@ -211,9 +232,13 @@ class Hardware:
         return snap
 
     def set_profile(self, firmware_value: str) -> None:
+        self.refresh_paths()
+        if not PROFILE_FILE.is_file():
+            raise MissingDriverError()
         self.write(PROFILE_FILE, firmware_value)
 
     def set_fans(self, cpu_pct: int, gpu_pct: int, auto: bool) -> None:
+        self.refresh_paths()
         if auto:
             if self.caps.fan_speed and self.sense is not None:
                 # Linuwu requires the CPU,GPU pair. A lone "0" returns EINVAL.
@@ -222,6 +247,8 @@ class Hardware:
                 self.write(self.hwmon / "pwm1_enable", "2")
                 if (self.hwmon / "pwm2_enable").is_file():
                     self.write(self.hwmon / "pwm2_enable", "2")
+            else:
+                raise MissingDriverError()
             return
 
         cpu_pct = max(1, min(100, int(cpu_pct)))
@@ -234,6 +261,8 @@ class Hardware:
             if (self.hwmon / "pwm2").is_file():
                 self.write(self.hwmon / "pwm2_enable", "1")
                 self.write(self.hwmon / "pwm2", str(round(gpu_pct * 255 / 100)))
+        else:
+            raise MissingDriverError()
 
     def set_flag(self, name: str, enabled: bool) -> None:
         if self.sense is None:
@@ -266,6 +295,13 @@ class Hardware:
         self.write(self.kb / "four_zone_mode", payload)
 
     def write(self, path: Path, value: str) -> None:
+        path = Path(path)
+        if not path.exists():
+            # Creating a missing sysfs node often looks like EACCES and would
+            # spam pkexec. Fail closed with a clear message instead.
+            if path == PROFILE_FILE or path.name == "platform_profile":
+                raise MissingDriverError()
+            raise FileNotFoundError(str(path))
         path = path.resolve()
         try:
             path.write_text(value + "\n", encoding="utf-8")

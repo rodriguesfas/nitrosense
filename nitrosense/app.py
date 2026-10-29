@@ -8,6 +8,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -19,6 +20,7 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Adw, Gdk, GLib, Gtk, Pango
 
+from nitrosense.bench import BenchRunner
 from nitrosense.cpu import (
     boost_pl1,
     cpu_unlocked,
@@ -27,10 +29,10 @@ from nitrosense.cpu import (
     restore_saved_cpu,
     set_cpu_unlock,
 )
+from nitrosense.drivers import probe as probe_drivers, summary_line as drivers_summary
 from nitrosense.gpu import powerd_active, restore_saved_tgp, set_tgp
-from nitrosense.hardware import NITRO_MODES, Hardware
+from nitrosense.hardware import NITRO_MODES, Hardware, MissingDriverError
 from nitrosense.i18n import LANG_LABELS, LANGS, lang as ui_lang, save_lang, set_lang, t
-from nitrosense.tray import TrayIcon
 from nitrosense.lighting import (
     NIGHT_TEMP_MAX,
     NIGHT_TEMP_MIN,
@@ -42,8 +44,18 @@ from nitrosense.lighting import (
     set_screen_brightness,
     toggle_lock_led,
 )
+from nitrosense.profiles import (
+    PROFILES,
+    ApplyResult,
+    apply_profile,
+    restore_safe,
+    saved_profile_id,
+)
+from nitrosense.resume import watch_prepare_for_sleep
 from nitrosense.scenarios import Rule, ScenarioConfig, load as load_scenarios, save as save_scenarios
 from nitrosense.sensors import GpuInfo, ProcInfo, Sensors, read_sensors
+from nitrosense.throttle import probe as probe_throttle
+from nitrosense.tray import TrayIcon
 from nitrosense.widgets import (
     DISK,
     CoreTile,
@@ -282,7 +294,14 @@ class NitroWindow(Adw.ApplicationWindow):
         self._cpu_max_w: int | None = None
         self._tgp_restore_tried = False
         self._proc_tick = 0
+        self._bench = BenchRunner()
+        self._profile_buttons: dict[str, Gtk.Button] = {}
+        self._eng_verify = Gtk.Label(wrap=True, xalign=0)
+        self._eng_drivers = Gtk.Label(wrap=True, xalign=0)
+        self._eng_throttle = Gtk.Label(wrap=True, xalign=0)
+        self._eng_bench_status = Gtk.Label(wrap=True, xalign=0)
         self._build()
+        watch_prepare_for_sleep(self._on_prepare_for_sleep)
         GLib.timeout_add(1000, self._tick)
         GLib.timeout_add(40, self._spin)
         GLib.idle_add(self._tick)
@@ -309,6 +328,7 @@ class NitroWindow(Adw.ApplicationWindow):
         tabs.add_titled(self._page_monitoring(), "monitoring", t("tab.monitoring"))
         tabs.add_titled(self._page_resources(), "resources", t("tab.resources"))
         tabs.add_titled(self._page_lighting(), "lighting", t("tab.lighting"))
+        tabs.add_titled(self._page_engineer(), "engineer", t("tab.engineer"))
         tabs.add_titled(self._page_settings(), "settings", t("tab.settings"))
         self._tabs = tabs
         for name, key in (
@@ -317,6 +337,7 @@ class NitroWindow(Adw.ApplicationWindow):
             ("monitoring", "tab.monitoring"),
             ("resources", "tab.resources"),
             ("lighting", "tab.lighting"),
+            ("engineer", "tab.engineer"),
             ("settings", "tab.settings"),
         ):
             child = tabs.get_child_by_name(name)
@@ -1063,6 +1084,108 @@ class NitroWindow(Adw.ApplicationWindow):
             box.append(note)
         return box
 
+    def _page_engineer(self) -> Gtk.Widget:
+        intro = Gtk.Label(wrap=True, xalign=0)
+        intro.add_css_class("muted")
+        self._i18n_bind(intro, "eng.intro")
+
+        profiles = Gtk.Box(spacing=8)
+        profiles.set_homogeneous(True)
+        for prof in PROFILES:
+            btn = Gtk.Button(label=t(prof.label_key))
+            btn.add_css_class("pill")
+            btn.set_tooltip_text(t(prof.notes_key))
+            btn.connect("clicked", self._on_profile, prof.id)
+            self._profile_buttons[prof.id] = btn
+            self._i18n_bind(btn, prof.label_key)
+            profiles.append(btn)
+
+        verify_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        verify_box.add_css_class("panel")
+        self._eng_verify.add_css_class("muted")
+        self._eng_verify.set_text("—")
+        verify_box.append(self._eng_verify)
+
+        drivers_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        drivers_box.add_css_class("panel")
+        self._eng_drivers.add_css_class("muted")
+        drivers_box.append(self._eng_drivers)
+        doctor_btn = Gtk.Button()
+        self._i18n_bind(doctor_btn, "eng.doctor")
+        doctor_btn.set_halign(Gtk.Align.START)
+        doctor_btn.connect("clicked", lambda *_: self._refresh_engineer_status())
+        drivers_box.append(doctor_btn)
+
+        throttle_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        throttle_box.add_css_class("panel")
+        self._eng_throttle.add_css_class("muted")
+        throttle_box.append(self._eng_throttle)
+
+        bench = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        bench.add_css_class("panel")
+        hint = Gtk.Label(wrap=True, xalign=0)
+        hint.add_css_class("muted")
+        self._i18n_bind(hint, "eng.bench_hint")
+        bench.append(hint)
+        row = Gtk.Box(spacing=8)
+        for key, kind in (
+            ("eng.bench_cpu", "cpu"),
+            ("eng.bench_gpu", "gpu"),
+            ("eng.bench_combined", "combined"),
+        ):
+            b = Gtk.Button()
+            self._i18n_bind(b, key)
+            b.connect("clicked", self._on_bench, kind)
+            row.append(b)
+        abort = Gtk.Button()
+        self._i18n_bind(abort, "eng.bench_abort")
+        abort.connect("clicked", self._on_bench_abort)
+        row.append(abort)
+        bench.append(row)
+        self._eng_bench_status.add_css_class("muted")
+        self._eng_bench_status.set_text("—")
+        bench.append(self._eng_bench_status)
+
+        actions = Gtk.Box(spacing=8)
+        safe_btn = Gtk.Button()
+        self._i18n_bind(safe_btn, "eng.safe")
+        safe_btn.connect("clicked", self._on_profile, "safe")
+        actions.append(safe_btn)
+        audit = Gtk.Label(wrap=True, xalign=0)
+        audit.add_css_class("muted")
+        self._i18n_bind(audit, "eng.audit")
+
+        legend = Gtk.Box(spacing=12)
+        c = Gtk.Label(xalign=0)
+        c.add_css_class("muted")
+        self._i18n_bind(c, "eng.controllable")
+        r = Gtk.Label(xalign=0)
+        r.add_css_class("muted")
+        self._i18n_bind(r, "eng.readonly")
+        legend.append(c)
+        legend.append(Gtk.Label(label="·"))
+        legend.append(r)
+        legend.append(Gtk.Label(label="mode/fans/PL1/TGP/gov/EPP/PPD  |  temps/RPM/throttle"))
+
+        page = self._res_sheet(
+            intro,
+            self._res_title("eng.profiles"),
+            profiles,
+            actions,
+            self._res_title("eng.verify"),
+            verify_box,
+            self._res_title("eng.drivers"),
+            drivers_box,
+            self._res_title("eng.throttle"),
+            throttle_box,
+            self._res_title("eng.bench"),
+            bench,
+            audit,
+            legend,
+        )
+        self._refresh_engineer_status()
+        return page
+
     def _page_settings(self) -> Gtk.Widget:
         self.limit_switch.connect("state-set", self._on_flag, "battery_limiter")
         self.boot_switch.connect("state-set", self._on_flag, "boot_animation_sound")
@@ -1288,6 +1411,8 @@ class NitroWindow(Adw.ApplicationWindow):
             self._drv_facts["Choices"].set_text(" ".join(snap.profile_choices) or "—")
         self._sync_cpu()
         self._sync_tgp(sensors)
+        if self._proc_tick % 5 == 0:
+            self._refresh_engineer_status(light=True)
         if not self._tgp_restore_tried:
             self._tgp_restore_tried = True
             GLib.idle_add(self._restore_saved_power)
@@ -1476,6 +1601,8 @@ class NitroWindow(Adw.ApplicationWindow):
         return False
 
     def _restore_saved_power(self) -> bool:
+        # Login: only RAPL / Dynamic Boost (autostart). Full profiles are
+        # explicit from ENGINEER or post-resume safe restore.
         try:
             restore_saved_cpu()
         except Exception:  # noqa: BLE001
@@ -1484,11 +1611,123 @@ class NitroWindow(Adw.ApplicationWindow):
             restore_saved_tgp()
         except Exception:  # noqa: BLE001
             pass
+        self._refresh_engineer_status()
         return False
+
+    def _on_prepare_for_sleep(self, sleeping: bool) -> None:
+        if sleeping:
+            return
+
+        def _after_resume() -> bool:
+            self.hw.refresh_paths()
+            try:
+                restore_safe(self.hw)
+                self._toast(t("prof.safe"))
+            except Exception as exc:  # noqa: BLE001
+                self._toast(str(exc))
+            self._refresh_engineer_status()
+            return False
+
+        # Give Linuwu / NVIDIA a moment after hibernation exit.
+        GLib.timeout_add(2500, _after_resume)
+
+    def _on_profile(self, _btn, profile_id: str) -> None:
+        self._mode_manual_until = time.monotonic() + 45
+
+        def work() -> None:
+            try:
+                result = apply_profile(profile_id, self.hw)
+            except Exception as exc:  # noqa: BLE001
+                GLib.idle_add(self._toast, str(exc))
+                return
+            GLib.idle_add(self._on_profile_done, result)
+
+        threading.Thread(target=work, daemon=True).start()
+        self._toast(t(next(p.label_key for p in PROFILES if p.id == profile_id)))
+
+    def _on_profile_done(self, result: ApplyResult) -> bool:
+        self._show_verify(result)
+        active = result.profile_id if result.ok else saved_profile_id()
+        for pid, btn in self._profile_buttons.items():
+            if pid == active:
+                btn.add_css_class("active")
+            else:
+                btn.remove_css_class("active")
+        if not result.ok:
+            self._toast("; ".join(result.errors) or "profile verify failed")
+        return False
+
+    def _show_verify(self, result: ApplyResult) -> None:
+        lines = [f"{t('eng.verify')} · {result.profile_id} · {'OK' if result.ok else 'FAIL'}"]
+        for item in result.checks:
+            mark = "✓" if item.ok else "✗"
+            lines.append(f"{mark} {item.name}: {item.requested} → {item.effective}")
+        for err in result.errors:
+            lines.append(f"! {err}")
+        self._eng_verify.set_text("\n".join(lines))
+
+    def _refresh_engineer_status(self, light: bool = False) -> None:
+        if not hasattr(self, "_eng_drivers"):
+            return
+        if not light:
+            health = probe_drivers()
+            notes = "\n".join(f"! {n}" for n in health.notes) if health.notes else "OK"
+            self._eng_drivers.set_text(f"{drivers_summary(health)}\n{notes}")
+        thr = probe_throttle()
+        temps = ",".join(str(x) for x in thr.acer_temp_c) or "—"
+        reasons = ", ".join(thr.reasons) if thr.reasons else "none"
+        self._eng_throttle.set_text(
+            f"CPU {thr.cpu_freq_mhz or '—'} MHz · PL1 {thr.cpu_pl1_w or '—'} W · "
+            f"GPU live {thr.gpu_live_w or '—'} W · acer°C [{temps}] · "
+            f"gpu°C {thr.gpu_temp_c or '—'} · throttle: {reasons}"
+        )
+        active = saved_profile_id()
+        for pid, btn in self._profile_buttons.items():
+            if pid == active:
+                btn.add_css_class("active")
+            else:
+                btn.remove_css_class("active")
+
+    def _on_bench(self, _btn, kind: str) -> None:
+        if self._bench.running:
+            self._toast("bench already running")
+            return
+        self._eng_bench_status.set_text(f"starting {kind}…")
+
+        def progress(msg: str) -> None:
+            GLib.idle_add(self._eng_bench_status.set_text, msg)
+
+        def work() -> None:
+            try:
+                result = self._bench.run(kind, 60, on_progress=progress)
+            except Exception as exc:  # noqa: BLE001
+                GLib.idle_add(self._eng_bench_status.set_text, str(exc))
+                return
+            text = (
+                f"{result.kind} {result.duration_s}s · "
+                f"{'PASS' if result.ok else 'FAIL'} · "
+                f"max°C={result.max_temp_c} · throttle={result.throttle_hits}"
+                + (f" · {result.reason}" if result.reason else "")
+            )
+            GLib.idle_add(self._eng_bench_status.set_text, text)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _on_bench_abort(self, _btn) -> None:
+        self._bench.abort(restore=True)
+        self._eng_bench_status.set_text("aborted → safe profile")
+        self._refresh_engineer_status()
 
     def _run(self, fn, *args) -> None:
         try:
             fn(*args)
+        except MissingDriverError as exc:
+            key = (
+                "err.driver_unloaded"
+                if exc.module_built
+                else "err.driver_missing"
+            )
+            self._toast(t(key, kver=exc.kernel))
         except Exception as exc:  # noqa: BLE001
             self._toast(str(exc))
 

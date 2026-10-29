@@ -39,4 +39,28 @@
     <annotate key="org.freedesktop.policykit.exec.argv1">cpu</annotate>
     <annotate key="org.freedesktop.policykit.exec.allow_gui">true</annotate>
   </action>
+  <action id="org.alfred.nitrosense.epp">
+    <description>NitroSense Linux: set CPU energy performance preference</description>
+    <message>NitroSense Linux needs to set the CPU energy_performance_preference.</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>yes</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">@HELPER@</annotate>
+    <annotate key="org.freedesktop.policykit.exec.argv1">epp</annotate>
+    <annotate key="org.freedesktop.policykit.exec.allow_gui">true</annotate>
+  </action>
+  <action id="org.alfred.nitrosense.governor">
+    <description>NitroSense Linux: set CPU frequency governor</description>
+    <message>NitroSense Linux needs to set the CPU scaling_governor.</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>yes</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">@HELPER@</annotate>
+    <annotate key="org.freedesktop.policykit.exec.argv1">governor</annotate>
+    <annotate key="org.freedesktop.policykit.exec.allow_gui">true</annotate>
+  </action>
 </policyconfig>

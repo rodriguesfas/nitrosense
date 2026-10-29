@@ -42,6 +42,8 @@ find "$STAGE" -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete
 
 install -m 0755 "$ROOT/bin/nitrosense" "$STAGE/usr/bin/nitrosense"
 install -m 0755 "$ROOT/bin/nitrosense-tgp-restore" "$STAGE/usr/bin/nitrosense-tgp-restore"
+install -m 0755 "$ROOT/bin/nitrosense-restore" "$STAGE/usr/bin/nitrosense-restore"
+install -m 0755 "$ROOT/bin/nitrosense-doctor" "$STAGE/usr/bin/nitrosense-doctor"
 install -m 0755 "$ROOT/bin/nitrosense-helper" "$STAGE/usr/libexec/nitrosense-helper"
 install -m 0755 "$ROOT/bin/nitrosense-hotkey" "$STAGE/usr/libexec/nitrosense-hotkey"
 install -m 0755 "$ROOT/bin/nitrosense-fixperms" "$STAGE/usr/libexec/nitrosense-fixperms"
