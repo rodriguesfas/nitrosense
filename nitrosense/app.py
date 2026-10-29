@@ -2762,15 +2762,33 @@ class NitroSenseApplication(Adw.Application):
     def _ensure_window(self) -> None:
         if self.window is None:
             self.window = NitroWindow(self)
+            # GTK4 hide-on-close: X button hides instead of destroy so present()
+            # can raise the same window again from the tray.
+            self.window.set_hide_on_close(True)
             self.window.connect("close-request", self._hide_to_tray)
 
     def _hide_to_tray(self, *_args) -> bool:
         if self.window is not None:
             self.window.set_visible(False)
+        # True still stops destroy if hide-on-close is ignored by the shell.
         return True
 
     def _show_from_tray(self) -> None:
-        self.activate()
+        # Defer past dbusmenu dismiss — presenting during the click often no-ops
+        # on GNOME/Wayland (focus-stealing / surface not mapped yet).
+        GLib.timeout_add(120, self._raise_window)
+
+    def _raise_window(self) -> bool:
+        self._ensure_window()
+        assert self.window is not None
+        win = self.window
+        win.set_visible(True)
+        try:
+            win.unminimize()
+        except Exception:  # noqa: BLE001
+            pass
+        win.present()
+        return False
 
     def _quit_from_tray(self) -> None:
         self.release()
