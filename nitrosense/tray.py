@@ -391,7 +391,8 @@ class TrayIcon:
                 19,
                 self._cpu_unlock_label(),
                 self._cpu_unlocked,
-                icon_name="cpu-symbolic",
+                # Yaru/Adwaita have no cpu-symbolic — system-monitor is the CPU stand-in.
+                icon_name="utilities-system-monitor-symbolic",
             ),
             self._check(
                 20,
